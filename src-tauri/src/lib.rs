@@ -1,3 +1,5 @@
+mod terminal;
+
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -68,10 +70,15 @@ fn list_directory(path: String) -> Result<Vec<FsEntry>, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(terminal::TerminalSession::default())
         .invoke_handler(tauri::generate_handler![
             default_local_root,
             parent_directory,
-            list_directory
+            list_directory,
+            terminal::terminal_spawn,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_kill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
