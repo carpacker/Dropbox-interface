@@ -20,7 +20,7 @@ Desktop-first shell for browsing local folders (with Dropbox integration planned
 ## UI notes
 
 - **Files** tab: lists directories via Rust commands (`default_local_root`, `list_directory`, `parent_directory`).
-- **Terminal** tab: embedded **xterm.js** wired to a **local PTY** (via [`portable-pty`](https://crates.io/crates/portable-pty)): Windows starts **PowerShell** (`powershell.exe -NoLogo`); macOS/Linux uses **`$SHELL`** or `/bin/sh`. Output streams on Tauri events `terminal-output` / `terminal-exit`; input uses `terminal_write`. Opening the tab mounts the terminal; leaving it disposes the PTY.
+- **Terminal** tab: embedded **xterm.js** + **`portable-pty`**. Shell profile is selectable (Windows: PowerShell, Command Prompt, `pwsh`; macOS/Linux: login **`$SHELL`**, `/bin/sh`, `/bin/bash`) and stored under **`localStorage`** key `dropbox-interface:terminal-shell`. After you open Terminal once, the tab panel stays mounted so the **PTY session survives** switching to Files. `terminal_spawn` takes a **`shell`** id plus **`cols`** / **`rows`**; streams use **`terminal-output`** / **`terminal-exit`** events and **`terminal_write`** for input.
 
 ## shadcn/ui
 

@@ -13,6 +13,24 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  UNIX_SHELL_OPTIONS,
+  WINDOWS_SHELL_OPTIONS,
+  defaultShellId,
+  isLikelyWindows,
+  loadTerminalShellId,
+  saveTerminalShellId,
+  type TerminalShellId,
+} from "@/lib/terminal-preferences";
+import {
   terminalKill,
   terminalResize,
   terminalSpawn,
@@ -21,12 +39,18 @@ import {
 
 import "@xterm/xterm/css/xterm.css";
 
+function shellLabel(id: TerminalShellId): string {
+  const opts = isLikelyWindows() ? WINDOWS_SHELL_OPTIONS : UNIX_SHELL_OPTIONS;
+  return opts.find((o) => o.value === id)?.label ?? id;
+}
+
 function termColors() {
   const root = document.documentElement;
   const styles = getComputedStyle(root);
   const bg = styles.getPropertyValue("--background").trim() || "#ffffff";
   const fg = styles.getPropertyValue("--foreground").trim() || "#0a0a0a";
-  const muted = styles.getPropertyValue("--muted-foreground").trim() || "#737373";
+  const muted =
+    styles.getPropertyValue("--muted-foreground").trim() || "#737373";
   const accent = styles.getPropertyValue("--primary").trim() || "#171717";
   return {
     background: bg,
@@ -39,13 +63,27 @@ function termColors() {
   };
 }
 
-export function DesktopTerminal() {
+type DesktopTerminalProps = {
+  /** When false, skips PTY resize (tab hidden avoids 0×0 geometry). */
+  active: boolean;
+};
+
+export function DesktopTerminal({ active }: DesktopTerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const unlistenRef = useRef<UnlistenFn[]>([]);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const resizeFrameRef = useRef<number>(0);
+
+  const shellIdRef = useRef<TerminalShellId>(loadTerminalShellId());
+  const [shellId, setShellId] = useState<TerminalShellId>(() => {
+    const stored = loadTerminalShellId();
+    shellIdRef.current = stored;
+    return stored;
+  });
 
   const [bootError, setBootError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("Starting…");
@@ -60,7 +98,7 @@ export function DesktopTerminal() {
   const resizePty = useCallback(async () => {
     const term = termRef.current;
     const fit = fitRef.current;
-    if (!term || !fit) {
+    if (!term || !fit || !activeRef.current) {
       return;
     }
     fit.fit();
@@ -76,7 +114,7 @@ export function DesktopTerminal() {
     }
   }, []);
 
-  const bootShell = useCallback(async () => {
+  const spawnOrRestartShell = useCallback(async () => {
     const term = termRef.current;
     const fit = fitRef.current;
     if (!term || !fit) {
@@ -85,22 +123,53 @@ export function DesktopTerminal() {
     fit.fit();
     const cols = term.cols;
     const rows = term.rows;
+    if (cols <= 0 || rows <= 0) {
+      return;
+    }
     setBootError(null);
     setStatus("Connecting shell…");
     try {
       await terminalKill();
     } catch {
-      /* first boot */
+      /* cold start */
     }
     try {
-      await terminalSpawn(cols, rows);
-      setStatus(`Shell · ${cols}×${rows}`);
+      await terminalSpawn(shellIdRef.current, cols, rows);
+      setStatus(`${shellLabel(shellIdRef.current)} · ${cols}×${rows}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setBootError(msg);
       setStatus("Could not start shell");
     }
   }, []);
+
+  const onShellChoice = useCallback(
+    async (next: TerminalShellId) => {
+      const normalized =
+        isLikelyWindows() && (next === "login" || next === "sh" || next === "bash")
+          ? defaultShellId()
+          : !isLikelyWindows() &&
+              (next === "powershell" || next === "cmd" || next === "pwsh")
+            ? defaultShellId()
+            : next;
+
+      saveTerminalShellId(normalized);
+      shellIdRef.current = normalized;
+      setShellId(normalized);
+      await spawnOrRestartShell();
+    },
+    [spawnOrRestartShell],
+  );
+
+  useEffect(() => {
+    if (!active) {
+      return;
+    }
+    const id = requestAnimationFrame(() => {
+      void resizePty();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [active, resizePty]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -110,7 +179,8 @@ export function DesktopTerminal() {
 
     const term = new Terminal({
       cursorBlink: true,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      fontFamily:
+        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
       fontSize: 13,
       theme: termColors(),
       scrollback: 5000,
@@ -144,7 +214,7 @@ export function DesktopTerminal() {
         setStatus("Event listener failed — run inside Tauri");
       }
 
-      await bootShell();
+      await spawnOrRestartShell();
     })();
 
     const ro = new ResizeObserver(() => {
@@ -174,27 +244,58 @@ export function DesktopTerminal() {
       fitRef.current = null;
       void terminalKill().catch(() => {});
     };
-  }, [bootShell, detachListeners, resizePty]);
+  }, [detachListeners, resizePty, spawnOrRestartShell]);
+
+  const shellOptions = isLikelyWindows()
+    ? WINDOWS_SHELL_OPTIONS
+    : UNIX_SHELL_OPTIONS;
 
   return (
     <Card className="flex flex-col gap-0 overflow-hidden">
-      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 border-b pb-4">
-        <div className="flex flex-col gap-1">
+      <CardHeader className="flex flex-col gap-4 border-b pb-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
           <CardTitle>Terminal</CardTitle>
           <CardDescription>
-            Local PTY (PowerShell on Windows, <code className="font-mono text-xs">$SHELL</code>{" "}
-            elsewhere). Resize the pane to update the pty geometry.
+            Local PTY. Shell choice is remembered in browser storage for this app.
+            Session stays alive when you switch to other tabs after opening
+            Terminal once.
           </CardDescription>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => void bootShell()}
-        >
-          <RotateCcw data-icon="inline-start" />
-          Restart shell
-        </Button>
+        <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">
+              Shell profile
+            </span>
+            <Select
+              value={shellId}
+              onValueChange={(v) => void onShellChoice(v as TerminalShellId)}
+            >
+              <SelectTrigger className="w-full min-w-[12rem] sm:w-56">
+                <SelectValue placeholder="Pick a shell" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectLabel>{isLikelyWindows() ? "Windows" : "Unix"}</SelectLabel>
+                  {shellOptions.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            onClick={() => void spawnOrRestartShell()}
+          >
+            <RotateCcw data-icon="inline-start" />
+            Restart shell
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3 pt-4">
         <p className="text-xs text-muted-foreground">{status}</p>

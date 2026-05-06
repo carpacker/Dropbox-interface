@@ -39,17 +39,42 @@ impl Default for TerminalSession {
     }
 }
 
-fn build_shell_command() -> CommandBuilder {
+fn build_shell_command(shell: &str) -> Result<CommandBuilder, String> {
+    let key = shell.trim();
     #[cfg(windows)]
     {
-        let mut cmd = CommandBuilder::new("powershell.exe");
-        cmd.arg("-NoLogo");
-        cmd
+        match key {
+            "powershell" | "" => {
+                let mut cmd = CommandBuilder::new("powershell.exe");
+                cmd.arg("-NoLogo");
+                Ok(cmd)
+            }
+            "cmd" => Ok(CommandBuilder::new("cmd.exe")),
+            "pwsh" => {
+                let mut cmd = CommandBuilder::new("pwsh");
+                cmd.arg("-NoLogo");
+                Ok(cmd)
+            }
+            other => Err(format!(
+                "Unknown shell \"{}\". Use powershell, cmd, or pwsh.",
+                other
+            )),
+        }
     }
     #[cfg(not(windows))]
     {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        CommandBuilder::new(shell)
+        match key {
+            "login" | "posix" | "" => {
+                let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+                Ok(CommandBuilder::new(sh))
+            }
+            "sh" => Ok(CommandBuilder::new("/bin/sh")),
+            "bash" => Ok(CommandBuilder::new("/bin/bash")),
+            other => Err(format!(
+                "Unknown shell \"{}\". Use login, sh, or bash.",
+                other
+            )),
+        }
     }
 }
 
@@ -75,7 +100,13 @@ impl TerminalSession {
         Ok(())
     }
 
-    pub fn spawn(&self, app: AppHandle, cols: u16, rows: u16) -> Result<(), String> {
+    pub fn spawn(
+        &self,
+        app: AppHandle,
+        shell: String,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String> {
         self.kill_inner()?;
 
         let pty_system = native_pty_system();
@@ -91,7 +122,7 @@ impl TerminalSession {
         let slave = pair.slave;
         let master = pair.master;
 
-        let cmd = build_shell_command();
+        let cmd = build_shell_command(&shell)?;
         let child = slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         drop(slave);
 
@@ -188,10 +219,11 @@ impl TerminalSession {
 pub fn terminal_spawn(
     app: AppHandle,
     session: State<'_, TerminalSession>,
+    shell: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    session.spawn(app, cols, rows)
+    session.spawn(app, shell, cols, rows)
 }
 
 #[tauri::command]

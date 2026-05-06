@@ -1,7 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export function terminalSpawn(cols: number, rows: number) {
-  return invoke<void>("terminal_spawn", { cols, rows });
+import type { TerminalShellId } from "@/lib/terminal-preferences";
+
+export function terminalSpawn(
+  shell: TerminalShellId,
+  cols: number,
+  rows: number,
+) {
+  return invoke<void>("terminal_spawn", { shell, cols, rows });
 }
 
 export function terminalWrite(data: string) {

@@ -2,6 +2,7 @@ import { lazy, Suspense, useState } from "react";
 
 import { FileBrowser } from "@/components/file-browser";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 
 const DesktopTerminal = lazy(() =>
   import("@/components/desktop-terminal").then((m) => ({
@@ -11,6 +12,14 @@ const DesktopTerminal = lazy(() =>
 
 function App() {
   const [tab, setTab] = useState("files");
+  const [terminalEverOpened, setTerminalEverOpened] = useState(false);
+
+  function handleTabChange(value: string) {
+    setTab(value);
+    if (value === "terminal") {
+      setTerminalEverOpened(true);
+    }
+  }
 
   return (
     <div className="flex min-h-screen flex-col gap-6 bg-background p-6">
@@ -23,11 +32,7 @@ function App() {
         </p>
       </header>
 
-      <Tabs
-        value={tab}
-        onValueChange={setTab}
-        className="flex flex-col gap-4"
-      >
+      <Tabs value={tab} onValueChange={handleTabChange} className="flex flex-col gap-4">
         <TabsList>
           <TabsTrigger value="files">Files</TabsTrigger>
           <TabsTrigger value="terminal">Terminal</TabsTrigger>
@@ -35,17 +40,25 @@ function App() {
         <TabsContent value="files" className="flex flex-col gap-4">
           <FileBrowser />
         </TabsContent>
-        <TabsContent value="terminal" className="flex flex-col gap-4">
-          {tab === "terminal" ? (
+        {terminalEverOpened ? (
+          <TabsContent
+            value="terminal"
+            forceMount
+            className={cn(
+              "flex flex-col gap-4 data-[state=inactive]:hidden",
+            )}
+          >
             <Suspense
               fallback={
-                <p className="text-sm text-muted-foreground">Loading terminal…</p>
+                <p className="text-sm text-muted-foreground">
+                  Loading terminal…
+                </p>
               }
             >
-              <DesktopTerminal />
+              <DesktopTerminal active={tab === "terminal"} />
             </Suspense>
-          ) : null}
-        </TabsContent>
+          </TabsContent>
+        ) : null}
       </Tabs>
     </div>
   );
