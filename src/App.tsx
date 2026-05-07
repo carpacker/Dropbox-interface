@@ -1,18 +1,18 @@
 import {
   ArrowLeft,
-  ChevronRight,
   Edit3,
   Eye,
-  FileText,
   FolderOpen,
   Globe,
   GripVertical,
+  Home,
+  LayoutDashboard,
   Link2,
   Lock,
   LockOpen,
   MonitorCog,
   RotateCcw,
-  Settings2,
+  Sparkles,
 } from "lucide-react";
 import { type ComponentType, useEffect, useMemo, useState } from "react";
 
@@ -131,9 +131,10 @@ function App() {
   const [layout, setLayout] = useState<DashboardLayout>(() => restoreLayout());
   const [editMode, setEditMode] = useState(false);
   const [layoutLocked, setLayoutLocked] = useState(
-    () => localStorage.getItem(DASHBOARD_EDIT_LOCK_KEY) !== "false",
+    () => localStorage.getItem(DASHBOARD_EDIT_LOCK_KEY) === "true",
   );
   const [draggingApp, setDraggingApp] = useState<AppKey | null>(null);
+  const [dragOverKey, setDragOverKey] = useState<AppKey | null>(null);
 
   const title = useMemo(() => {
     switch (activeApp) {
@@ -230,164 +231,248 @@ function App() {
     return "";
   }
 
-  return (
-    <div className="flex min-h-screen flex-col gap-6 bg-background p-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold tracking-tight">Dropbox Interface</h1>
-        <p className="text-sm text-muted-foreground">
-          Dashboard shell · React · TypeScript · shadcn/ui · Tauri
-        </p>
-      </header>
+  function endDragSession() {
+    setDraggingApp(null);
+    setDragOverKey(null);
+  }
 
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+  return (
+    <div className="relative flex min-h-screen flex-col gap-6 bg-gradient-to-b from-primary/[0.06] via-background to-background p-4 sm:p-6">
+      <div
+        className="pointer-events-none fixed inset-0 -z-10"
+        style={{
+          background:
+            "radial-gradient(ellipse 80% 50% at 50% -20%, color-mix(in oklch, var(--primary) 14%, transparent), transparent)",
+        }}
+        aria-hidden
+      />
+
+      <header className="mx-auto flex w-full max-w-6xl flex-col gap-4 rounded-2xl border border-border/60 bg-card/70 px-4 py-4 shadow-sm ring-1 ring-black/5 backdrop-blur-sm dark:bg-card/50 dark:ring-white/10 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <LayoutDashboard className="size-5" aria-hidden />
+          </div>
+          <div className="min-w-0 space-y-0.5">
+            <h1 className="truncate text-lg font-semibold tracking-tight sm:text-xl">
+              Dropbox Interface
+            </h1>
+            <p className="text-muted-foreground text-xs sm:text-sm">
+              Local workspace, photos, Dropbox, and a web bridge — one desktop shell.
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
           {activeApp !== "dashboard" ? (
             <Button
               type="button"
               variant="outline"
               size="sm"
+              className="shadow-sm"
               onClick={() => setActiveApp("dashboard")}
             >
               <ArrowLeft data-icon="inline-start" />
-              Back to dashboard
+              Dashboard
             </Button>
           ) : null}
-          <p className="text-sm font-medium">{title}</p>
+          {activeApp === "dashboard" ? (
+            <>
+              <Button
+                type="button"
+                variant={editMode ? "default" : "outline"}
+                size="sm"
+                className="shadow-sm"
+                onClick={() => setEditMode((prev) => !prev)}
+              >
+                <Edit3 data-icon="inline-start" />
+                {editMode ? "Done" : "Edit layout"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shadow-sm"
+                onClick={toggleLayoutLock}
+                title={layoutLocked ? "Unlock to allow dragging tiles" : "Lock to prevent accidental moves"}
+              >
+                {layoutLocked ? <Lock data-icon="inline-start" /> : <LockOpen data-icon="inline-start" />}
+                {layoutLocked ? "Locked" : "Unlocked"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shadow-sm"
+                onClick={resetLayout}
+              >
+                <RotateCcw data-icon="inline-start" />
+                Reset
+              </Button>
+              <Separator className="hidden h-8 sm:block" orientation="vertical" />
+              <div className="flex flex-wrap gap-1 rounded-lg border border-border/70 bg-muted/30 p-1 dark:bg-muted/15">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 px-2.5"
+                  onClick={() => setActiveApp("dashboard")}
+                >
+                  <Home className="size-4" />
+                  <span className="ml-1 hidden md:inline">Home</span>
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 px-2.5"
+                  onClick={() => setActiveApp("workspace")}
+                >
+                  <MonitorCog className="size-4" />
+                  <span className="ml-1 hidden md:inline">Workspace</span>
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 px-2.5"
+                  onClick={() => setActiveApp("photos")}
+                >
+                  <FolderOpen className="size-4" />
+                  <span className="ml-1 hidden md:inline">Photos</span>
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 px-2.5"
+                  onClick={() => setActiveApp("dropbox")}
+                >
+                  <Link2 className="size-4" />
+                  <span className="ml-1 hidden md:inline">Dropbox</span>
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 px-2.5"
+                  onClick={() => setActiveApp("web")}
+                >
+                  <Globe className="size-4" />
+                  <span className="ml-1 hidden md:inline">Web</span>
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Eye className="size-4 shrink-0" aria-hidden />
+              <span className="font-medium text-foreground">{title}</span>
+            </div>
+          )}
         </div>
-        {activeApp === "dashboard" ? (
-          <Button
-            type="button"
-            variant={editMode ? "secondary" : "outline"}
-            size="sm"
-            onClick={() => setEditMode((prev) => !prev)}
-          >
-            <Settings2 data-icon="inline-start" />
-            {editMode ? "Done editing" : "Edit dashboard"}
-          </Button>
-        ) : null}
-      </div>
-
-      <Card size="sm">
-        <CardContent className="flex flex-wrap items-center gap-2 py-2">
-          <div className="flex items-center gap-1">
-            <FileText className="text-muted-foreground" />
-            <Button type="button" variant="ghost" size="sm" onClick={() => setActiveApp("dashboard")}>
-              File
-            </Button>
-            <ChevronRight className="text-muted-foreground size-3" />
-            <Button type="button" variant="ghost" size="sm" onClick={() => setActiveApp("web")}>
-              Open Web Interface
-            </Button>
-          </div>
-          <Separator className="hidden h-5 md:block" orientation="vertical" />
-          <div className="flex items-center gap-1">
-            <Edit3 className="text-muted-foreground" />
-            <Button type="button" variant="ghost" size="sm" onClick={() => setEditMode((prev) => !prev)}>
-              {editMode ? "Exit Edit" : "Edit"}
-            </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={toggleLayoutLock}>
-              {layoutLocked ? "Unlock Layout" : "Lock Layout"}
-            </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={resetLayout}>
-              Reset Layout
-            </Button>
-          </div>
-          <Separator className="hidden h-5 md:block" orientation="vertical" />
-          <div className="flex items-center gap-1">
-            <Eye className="text-muted-foreground" />
-            <Button type="button" variant="ghost" size="sm" onClick={() => setActiveApp("workspace")}>
-              Workspace
-            </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setActiveApp("photos")}>
-              Photos
-            </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setActiveApp("dropbox")}>
-              Dropbox
-            </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setActiveApp("web")}>
-              Web
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      </header>
 
       {activeApp === "dashboard" ? (
         <>
           {editMode ? (
-            <Card size="sm">
-              <CardHeader className="border-b">
-                <CardTitle>Dashboard edit mode</CardTitle>
-                <CardDescription>
-                  Reorder tiles by dragging, resize cards, lock layout, or reset defaults.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-wrap items-center gap-2 pt-3">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={toggleLayoutLock}
-                >
-                  {layoutLocked ? <Lock data-icon="inline-start" /> : <LockOpen data-icon="inline-start" />}
-                  {layoutLocked ? "Unlock layout" : "Lock layout"}
-                </Button>
-                <Button type="button" variant="outline" size="sm" onClick={resetLayout}>
-                  <RotateCcw data-icon="inline-start" />
-                  Reset layout
-                </Button>
-                <p className="text-xs text-muted-foreground">
-                  {layoutLocked ? "Layout is locked" : "Layout unlocked for drag/reorder"}
-                </p>
-              </CardContent>
-            </Card>
+            <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-3 rounded-xl border border-dashed border-primary/35 bg-primary/5 px-4 py-3 text-sm dark:bg-primary/10">
+              <Sparkles className="size-4 shrink-0 text-primary" aria-hidden />
+              <p className="text-muted-foreground min-w-[12rem] flex-1">
+                {layoutLocked ? (
+                  <>
+                    <span className="font-medium text-foreground">Layout is locked.</span> Unlock to drag
+                    tiles by the grip handle.
+                  </>
+                ) : (
+                  <>
+                    <span className="font-medium text-foreground">Drag the grip</span> on each tile to
+                    reorder. Lock when you are happy with the layout.
+                  </>
+                )}
+              </p>
+            </div>
           ) : null}
-          <div className="grid gap-4 md:auto-rows-[minmax(180px,auto)] md:grid-cols-2 xl:grid-cols-3">
+          <div className="mx-auto grid w-full max-w-6xl gap-4 md:auto-rows-[minmax(180px,auto)] md:grid-cols-2 xl:grid-cols-3">
           {orderedApps.map((app) => {
             const Icon = app.icon;
             const isDragging = draggingApp === app.key;
+            const isDropTarget = Boolean(draggingApp && dragOverKey === app.key && draggingApp !== app.key);
             const canDrag = editMode && !layoutLocked;
             return (
               <Card
                 key={app.key}
-                draggable={canDrag}
-                onDragStart={() => {
-                  if (canDrag) setDraggingApp(app.key);
+                onDragOver={(e) => {
+                  if (!draggingApp || !canDrag) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  setDragOverKey(app.key);
                 }}
-                onDragEnd={() => setDraggingApp(null)}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={() => {
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                    setDragOverKey((prev) => (prev === app.key ? null : prev));
+                  }
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
                   if (draggingApp && canDrag) {
                     moveCard(draggingApp, app.key);
                   }
-                  setDraggingApp(null);
+                  endDragSession();
                 }}
-                className={`${cardSpanClass(app.key)} flex flex-col transition ${
-                  isDragging ? "opacity-60 ring-2 ring-primary/60" : "hover:ring-primary/30"
-                }`}
+                className={`${cardSpanClass(app.key)} flex flex-col shadow-sm ring-1 ring-black/[0.04] transition-[box-shadow,transform,opacity] duration-200 hover:-translate-y-0.5 hover:shadow-md dark:ring-white/[0.06] ${
+                  isDragging ? "scale-[0.99] opacity-60 ring-2 ring-primary/50" : ""
+                } ${isDropTarget ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : ""}`}
               >
                 <CardHeader className="flex flex-col gap-2">
-                  <CardTitle className="flex items-center justify-between gap-2">
-                    <span className="flex items-center gap-2">
-                      <Icon />
-                      {app.title}
+                  <CardTitle className="flex items-start justify-between gap-2">
+                    <span className="flex min-w-0 items-center gap-3">
+                      <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                        <Icon className="size-5" aria-hidden />
+                      </span>
+                      <span className="truncate leading-snug">{app.title}</span>
                     </span>
-                    <span className={`text-muted-foreground ${canDrag ? "" : "opacity-35"}`}>
-                      <GripVertical />
+                    <span
+                      role="button"
+                      tabIndex={canDrag ? 0 : -1}
+                      draggable={canDrag}
+                      aria-label={canDrag ? `Drag to reorder ${app.title}` : "Enable edit layout and unlock to reorder"}
+                      title={canDrag ? "Drag to reorder" : editMode ? "Unlock layout to reorder" : "Edit layout to reorder"}
+                      className={`text-muted-foreground -mr-1 -mt-0.5 inline-flex shrink-0 rounded-md p-1.5 touch-none select-none ${
+                        canDrag
+                          ? "cursor-grab active:cursor-grabbing hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                          : "cursor-not-allowed opacity-40"
+                      }`}
+                      onKeyDown={(e) => {
+                        if (!canDrag) return;
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                        }
+                      }}
+                      onDragStart={(e) => {
+                        if (!canDrag) {
+                          e.preventDefault();
+                          return;
+                        }
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", app.key);
+                        setDraggingApp(app.key);
+                      }}
+                      onDragEnd={endDragSession}
+                    >
+                      <GripVertical className="size-5" aria-hidden />
                     </span>
                   </CardTitle>
                   <CardDescription>{app.description}</CardDescription>
                 </CardHeader>
-                <CardContent className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                  <Button type="button" onClick={() => setActiveApp(app.key)}>
+                <CardContent className="mt-auto flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <Button type="button" className="shadow-sm" onClick={() => setActiveApp(app.key)}>
                     {app.launchLabel}
                   </Button>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                     {editMode ? (
                       <Select
                         value={layout.sizes[app.key]}
                         onValueChange={(value) => updateCardSize(app.key, value as CardSize)}
                       >
-                        <SelectTrigger className="w-36">
+                        <SelectTrigger className="w-full sm:w-36">
                           <SelectValue placeholder="Tile size" />
                         </SelectTrigger>
                         <SelectContent>
@@ -401,7 +486,11 @@ function App() {
                       </Select>
                     ) : null}
                     <p className="text-xs text-muted-foreground">
-                      {canDrag ? "Drag to reorder" : "Enable edit mode to rearrange"}
+                      {canDrag
+                        ? "Drag the grip to reorder"
+                        : layoutLocked && editMode
+                          ? "Unlock to reorder tiles"
+                          : "Edit layout to rearrange tiles"}
                     </p>
                   </div>
                 </CardContent>
@@ -412,10 +501,26 @@ function App() {
         </>
       ) : null}
 
-      {activeApp === "workspace" ? <DesktopWorkspaceApp /> : null}
-      {activeApp === "photos" ? <PhotosApp /> : null}
-      {activeApp === "dropbox" ? <DropboxBrowserApp /> : null}
-      {activeApp === "web" ? <WebInterfaceApp /> : null}
+      {activeApp === "workspace" ? (
+        <div className="mx-auto w-full max-w-6xl">
+          <DesktopWorkspaceApp />
+        </div>
+      ) : null}
+      {activeApp === "photos" ? (
+        <div className="mx-auto w-full max-w-6xl">
+          <PhotosApp />
+        </div>
+      ) : null}
+      {activeApp === "dropbox" ? (
+        <div className="mx-auto w-full max-w-6xl">
+          <DropboxBrowserApp />
+        </div>
+      ) : null}
+      {activeApp === "web" ? (
+        <div className="mx-auto w-full max-w-6xl">
+          <WebInterfaceApp />
+        </div>
+      ) : null}
     </div>
   );
 }
