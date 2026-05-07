@@ -199,6 +199,68 @@ impl WebBridgeManager {
                             &allow_origin_for_thread,
                         );
                     }
+                    (&Method::Get, "/api/bridge/info") => {
+                        let info = serde_json::json!({
+                            "ok": true,
+                            "service": "dropbox-interface-web-bridge",
+                            "version": env!("CARGO_PKG_VERSION"),
+                            "endpoints": [
+                                {
+                                    "method": "GET",
+                                    "path": "/health",
+                                    "description": "Liveness probe; no auth required when API key is unset (same as other routes once key is configured).",
+                                },
+                                {
+                                    "method": "GET",
+                                    "path": "/api/bridge/status",
+                                    "description": "Bridge request count and allowed CORS origin (reflects running config).",
+                                },
+                                {
+                                    "method": "GET",
+                                    "path": "/api/bridge/info",
+                                    "description": "Machine-readable list of routes and payload hints.",
+                                },
+                                {
+                                    "method": "GET",
+                                    "path": "/api/dashboard/state",
+                                    "description": "Last dashboard snapshot JSON published by the desktop app.",
+                                },
+                                {
+                                    "method": "POST",
+                                    "path": "/api/commands/open-app",
+                                    "body": {
+                                        "app": "dashboard | workspace | dropbox | web | photos | social_media | shoots_field | shoots_studio | assets",
+                                        "initialFolder": "optional string — seeds internal photo viewers",
+                                    },
+                                },
+                                {
+                                    "method": "POST",
+                                    "path": "/api/commands/dashboard-edit",
+                                    "body": {
+                                        "editMode": "optional boolean",
+                                        "layoutLocked": "optional boolean",
+                                    },
+                                },
+                                {
+                                    "method": "POST",
+                                    "path": "/api/commands/dashboard-layout",
+                                    "body": {
+                                        "tools": "optional { order?: string[], sizes?: Record<string,string> }",
+                                        "internal": "optional { order?: string[], sizes?: Record<string,string> }",
+                                    },
+                                },
+                            ],
+                            "headers": {
+                                "optional": ["x-bridge-key — required when bridge is started with a non-empty API key"],
+                            },
+                        });
+                        respond_json(
+                            req,
+                            200,
+                            info.to_string(),
+                            &allow_origin_for_thread,
+                        );
+                    }
                     (&Method::Get, "/api/bridge/status") => {
                         let payload = format!(
                             "{{\"ok\":true,\"requestCount\":{},\"allowOrigin\":\"{}\"}}",

@@ -1,5 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Globe, Link2, PlugZap, Power, Square, TestTube2 } from "lucide-react";
+import { Globe, Info, Link2, PlugZap, Power, Square, TestTube2 } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,8 @@ type WebBridgeConfig = {
   baseUrl: string;
   apiKey: string;
   allowOrigin: string;
+  /** Default path for open-app when the demo button does not pass an override. */
+  defaultOpenFolder?: string;
 };
 
 function restoreConfig(): WebBridgeConfig {
@@ -48,8 +50,8 @@ export function WebInterfaceApp() {
   const [statusText, setStatusText] = useState<string>("");
   const [bridgeStatus, setBridgeStatus] = useState<WebBridgeStatus | null>(null);
   const [dashboardStatePreview, setDashboardStatePreview] = useState<string>("");
+  const [bridgeInfoPreview, setBridgeInfoPreview] = useState<string>("");
   const [busy, setBusy] = useState(false);
-  const [bridgeOpenFolder, setBridgeOpenFolder] = useState("");
 
   const websocketUrl = useMemo(() => {
     try {
@@ -110,6 +112,28 @@ export function WebInterfaceApp() {
     }
   }
 
+  async function fetchBridgeInfo() {
+    if (!config.baseUrl.trim()) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/bridge/info`, {
+        method: "GET",
+        headers: config.apiKey ? { "x-bridge-key": config.apiKey } : undefined,
+      });
+      const text = await res.text();
+      try {
+        setBridgeInfoPreview(JSON.stringify(JSON.parse(text), null, 2));
+      } catch {
+        setBridgeInfoPreview(text);
+      }
+      setStatusText(`Bridge info: ${res.status} ${res.statusText}`);
+    } catch (e) {
+      setStatusText(`Bridge info fetch failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function postOpenAppCommand(
     app:
       | "dashboard"
@@ -127,7 +151,7 @@ export function WebInterfaceApp() {
     setBusy(true);
     try {
       const body: Record<string, unknown> = { app };
-      const folder = (options?.initialFolder ?? bridgeOpenFolder).trim();
+      const folder = (options?.initialFolder ?? config.defaultOpenFolder ?? "").trim();
       if (folder) {
         body.initialFolder = folder;
       }
@@ -277,8 +301,10 @@ export function WebInterfaceApp() {
             type="password"
           />
           <Input
-            value={bridgeOpenFolder}
-            onChange={(event) => setBridgeOpenFolder(event.currentTarget.value)}
+            value={config.defaultOpenFolder ?? ""}
+            onChange={(event) =>
+              saveConfig({ ...config, defaultOpenFolder: event.currentTarget.value })
+            }
             placeholder="Optional folder for open-app (photos / field / studio)"
             aria-label="Bridge open-app initial folder"
             className="font-mono text-sm"
@@ -298,6 +324,10 @@ export function WebInterfaceApp() {
             <Button type="button" onClick={() => void testHttp()} disabled={busy}>
               <TestTube2 data-icon="inline-start" />
               Test HTTP
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void fetchBridgeInfo()} disabled={busy}>
+              <Info data-icon="inline-start" />
+              Bridge info
             </Button>
             <Button
               type="button"
@@ -328,10 +358,8 @@ export function WebInterfaceApp() {
             <Button
               type="button"
               variant="outline"
-              onClick={() =>
-                void postOpenAppCommand("shoots_field", { initialFolder: bridgeOpenFolder })
-              }
-              disabled={busy || !bridgeOpenFolder.trim()}
+              onClick={() => void postOpenAppCommand("shoots_field")}
+              disabled={busy || !(config.defaultOpenFolder ?? "").trim()}
             >
               Open field + folder
             </Button>
@@ -370,6 +398,14 @@ export function WebInterfaceApp() {
               Running: {String(bridgeStatus.running)} · Requests: {bridgeStatus.requestCount}
               {bridgeStatus.bindAddr ? ` · Bind: ${bridgeStatus.bindAddr}` : ""}
             </p>
+          ) : null}
+          {bridgeInfoPreview ? (
+            <div className="rounded-lg border p-2">
+              <p className="mb-1 text-xs text-muted-foreground">Bridge info (GET /api/bridge/info)</p>
+              <pre className="max-h-40 overflow-auto font-mono text-xs whitespace-pre-wrap break-all">
+                {bridgeInfoPreview}
+              </pre>
+            </div>
           ) : null}
           {dashboardStatePreview ? (
             <div className="rounded-lg border p-2">
@@ -416,7 +452,8 @@ export function WebInterfaceApp() {
             ); <span className="font-mono">POST /api/commands/dashboard-edit</span>;{" "}
             <span className="font-mono">POST /api/commands/dashboard-layout</span> body{" "}
             <span className="font-mono">{"{ tools?: { order?, sizes? }, internal?: { order?, sizes? } }"}</span>.
-            Optional <span className="font-mono">x-bridge-key</span> on all. Also:{" "}
+            Optional <span className="font-mono">x-bridge-key</span> on all. Discovery:{" "}
+            <span className="font-mono">GET /api/bridge/info</span>. Also:{" "}
             <span className="font-mono">GET /health</span>, <span className="font-mono">/api/dashboard/state</span>.
           </p>
         </CardContent>
