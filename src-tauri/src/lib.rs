@@ -1,4 +1,5 @@
 mod terminal;
+mod web_bridge;
 
 use base64::Engine;
 use std::path::{Path, PathBuf};
@@ -101,6 +102,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(terminal::TerminalSession::default())
+        .manage(web_bridge::WebBridgeManager::default())
         .invoke_handler(tauri::generate_handler![
             default_local_root,
             parent_directory,
@@ -110,6 +112,10 @@ pub fn run() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_kill,
+            web_bridge::web_bridge_start,
+            web_bridge::web_bridge_stop,
+            web_bridge::web_bridge_status,
+            web_bridge::web_bridge_set_dashboard_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

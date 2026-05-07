@@ -1,5 +1,9 @@
 import {
   ArrowLeft,
+  ChevronRight,
+  Edit3,
+  Eye,
+  FileText,
   FolderOpen,
   Globe,
   GripVertical,
@@ -10,7 +14,7 @@ import {
   RotateCcw,
   Settings2,
 } from "lucide-react";
-import { type ComponentType, useMemo, useState } from "react";
+import { type ComponentType, useEffect, useMemo, useState } from "react";
 
 import { DesktopWorkspaceApp } from "@/components/desktop-workspace-app";
 import { DropboxBrowserApp } from "@/components/dropbox-browser-app";
@@ -33,6 +37,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { webBridgeSetDashboardState } from "@/lib/web-bridge";
 
 const DASHBOARD_LAYOUT_KEY = "dropbox-interface:dashboard-layout-v1";
 const DASHBOARD_EDIT_LOCK_KEY = "dropbox-interface:dashboard-edit-locked";
@@ -147,6 +153,17 @@ function App() {
     return layout.order.map((key) => byKey.get(key)).filter(Boolean) as AppDefinition[];
   }, [layout.order]);
 
+  useEffect(() => {
+    void webBridgeSetDashboardState({
+      activeApp,
+      editMode,
+      layoutLocked,
+      layout,
+      orderedApps: orderedApps.map((app) => app.key),
+      publishedAt: Date.now(),
+    }).catch(() => {});
+  }, [activeApp, editMode, layoutLocked, layout, orderedApps]);
+
   function moveCard(fromKey: AppKey, toKey: AppKey) {
     if (fromKey === toKey) return;
     const next = [...layout.order];
@@ -226,6 +243,50 @@ function App() {
           </Button>
         ) : null}
       </div>
+
+      <Card size="sm">
+        <CardContent className="flex flex-wrap items-center gap-2 py-2">
+          <div className="flex items-center gap-1">
+            <FileText className="text-muted-foreground" />
+            <Button type="button" variant="ghost" size="sm" onClick={() => setActiveApp("dashboard")}>
+              File
+            </Button>
+            <ChevronRight className="text-muted-foreground size-3" />
+            <Button type="button" variant="ghost" size="sm" onClick={() => setActiveApp("web")}>
+              Open Web Interface
+            </Button>
+          </div>
+          <Separator className="hidden h-5 md:block" orientation="vertical" />
+          <div className="flex items-center gap-1">
+            <Edit3 className="text-muted-foreground" />
+            <Button type="button" variant="ghost" size="sm" onClick={() => setEditMode((prev) => !prev)}>
+              {editMode ? "Exit Edit" : "Edit"}
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={toggleLayoutLock}>
+              {layoutLocked ? "Unlock Layout" : "Lock Layout"}
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={resetLayout}>
+              Reset Layout
+            </Button>
+          </div>
+          <Separator className="hidden h-5 md:block" orientation="vertical" />
+          <div className="flex items-center gap-1">
+            <Eye className="text-muted-foreground" />
+            <Button type="button" variant="ghost" size="sm" onClick={() => setActiveApp("workspace")}>
+              Workspace
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setActiveApp("photos")}>
+              Photos
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setActiveApp("dropbox")}>
+              Dropbox
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setActiveApp("web")}>
+              Web
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {activeApp === "dashboard" ? (
         <>
