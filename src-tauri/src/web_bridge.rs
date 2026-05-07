@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -37,6 +37,7 @@ pub struct WebBridgeManager {
     request_count: Arc<AtomicU64>,
     last_error: Arc<Mutex<Option<String>>>,
     dashboard_state_json: Arc<Mutex<String>>,
+    pending_open_app: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for WebBridgeManager {
@@ -46,6 +47,7 @@ impl Default for WebBridgeManager {
             request_count: Arc::new(AtomicU64::new(0)),
             last_error: Arc::new(Mutex::new(None)),
             dashboard_state_json: Arc::new(Mutex::new("{}".to_string())),
+            pending_open_app: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -54,7 +56,7 @@ fn cors_headers(allow_origin: &str) -> [Header; 4] {
     [
         Header::from_bytes("content-type", "application/json").unwrap(),
         Header::from_bytes("access-control-allow-origin", allow_origin).unwrap(),
-        Header::from_bytes("access-control-allow-methods", "GET,OPTIONS").unwrap(),
+        Header::from_bytes("access-control-allow-methods", "GET,POST,OPTIONS").unwrap(),
         Header::from_bytes("access-control-allow-headers", "content-type,x-bridge-key").unwrap(),
     ]
 }
@@ -100,6 +102,7 @@ impl WebBridgeManager {
         let api_key_for_thread = api_key.clone();
         let error_store = Arc::clone(&self.last_error);
         let dashboard_state = Arc::clone(&self.dashboard_state_json);
+        let open_app_queue = Arc::clone(&self.pending_open_app);
 
         self.request_count.store(0, Ordering::SeqCst);
         self.write_last_error(None);
@@ -110,7 +113,7 @@ impl WebBridgeManager {
                     break;
                 }
 
-                let req = match server.recv_timeout(Duration::from_millis(300)) {
+                let mut req = match server.recv_timeout(Duration::from_millis(300)) {
                     Ok(Some(req)) => req,
                     Ok(None) => continue,
                     Err(err) => {
@@ -174,6 +177,44 @@ impl WebBridgeManager {
                             dashboard_json
                         );
                         respond_json(req, 200, payload, &allow_origin_for_thread);
+                    }
+                    (&Method::Post, "/api/commands/open-app") => {
+                        let mut body = String::new();
+                        let mut reader = req.as_reader();
+                        if reader.read_to_string(&mut body).is_err() {
+                            respond_json(
+                                req,
+                                400,
+                                "{\"error\":\"invalid request body\"}".to_string(),
+                                &allow_origin_for_thread,
+                            );
+                            continue;
+                        }
+                        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
+                        let app = parsed
+                            .ok()
+                            .and_then(|v| v.get("app").and_then(|a| a.as_str()).map(|s| s.to_string()));
+                        match app.as_deref() {
+                            Some("dashboard" | "workspace" | "photos" | "dropbox" | "web") => {
+                                if let Ok(mut queue) = open_app_queue.lock() {
+                                    *queue = app;
+                                }
+                                respond_json(
+                                    req,
+                                    200,
+                                    "{\"ok\":true}".to_string(),
+                                    &allow_origin_for_thread,
+                                );
+                            }
+                            _ => {
+                                respond_json(
+                                    req,
+                                    400,
+                                    "{\"error\":\"invalid app target\"}".to_string(),
+                                    &allow_origin_for_thread,
+                                );
+                            }
+                        }
                     }
                     _ => {
                         respond_json(
@@ -246,6 +287,14 @@ impl WebBridgeManager {
         *guard = state_json;
         Ok(())
     }
+
+    fn take_open_app_command_internal(&self) -> Result<Option<String>, String> {
+        let mut guard = self
+            .pending_open_app
+            .lock()
+            .map_err(|_| "web bridge open-app queue mutex poisoned".to_string())?;
+        Ok(guard.take())
+    }
 }
 
 #[tauri::command]
@@ -276,4 +325,11 @@ pub fn web_bridge_set_dashboard_state(
     state_json: String,
 ) -> Result<(), String> {
     bridge.set_dashboard_state_internal(state_json)
+}
+
+#[tauri::command]
+pub fn web_bridge_take_open_app_command(
+    bridge: State<'_, WebBridgeManager>,
+) -> Result<Option<String>, String> {
+    bridge.take_open_app_command_internal()
 }

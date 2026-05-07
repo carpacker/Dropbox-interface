@@ -1,5 +1,5 @@
 use portable_pty::{
-    native_pty_system, Child, CommandBuilder, MasterPty, PtySize, PtySystem,
+    native_pty_system, Child, CommandBuilder, MasterPty, PtySize,
 };
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};

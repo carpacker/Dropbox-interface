@@ -116,6 +116,7 @@ pub fn run() {
             web_bridge::web_bridge_stop,
             web_bridge::web_bridge_status,
             web_bridge::web_bridge_set_dashboard_state,
+            web_bridge::web_bridge_take_open_app_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -24,7 +24,7 @@ type WebBridgeConfig = {
 
 function restoreConfig(): WebBridgeConfig {
   const fallback: WebBridgeConfig = {
-    baseUrl: "http://localhost:1420",
+    baseUrl: "http://127.0.0.1:8787",
     apiKey: "",
     allowOrigin: "http://localhost:3000",
   };

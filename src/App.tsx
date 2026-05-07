@@ -38,7 +38,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { webBridgeSetDashboardState } from "@/lib/web-bridge";
+import { webBridgeSetDashboardState, webBridgeTakeOpenAppCommand } from "@/lib/web-bridge";
 
 const DASHBOARD_LAYOUT_KEY = "dropbox-interface:dashboard-layout-v1";
 const DASHBOARD_EDIT_LOCK_KEY = "dropbox-interface:dashboard-edit-locked";
@@ -143,6 +143,8 @@ function App() {
         return "Photos";
       case "dropbox":
         return "Dropbox Explorer";
+      case "web":
+        return "Web Interface";
       default:
         return "Dashboard";
     }
@@ -163,6 +165,27 @@ function App() {
       publishedAt: Date.now(),
     }).catch(() => {});
   }, [activeApp, editMode, layoutLocked, layout, orderedApps]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void webBridgeTakeOpenAppCommand()
+        .then((cmd) => {
+          if (!cmd) return;
+          const next = cmd as ActiveApp;
+          if (
+            next === "dashboard" ||
+            next === "workspace" ||
+            next === "photos" ||
+            next === "dropbox" ||
+            next === "web"
+          ) {
+            setActiveApp(next);
+          }
+        })
+        .catch(() => {});
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   function moveCard(fromKey: AppKey, toKey: AppKey) {
     if (fromKey === toKey) return;

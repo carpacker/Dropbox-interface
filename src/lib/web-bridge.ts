@@ -30,3 +30,7 @@ export function webBridgeSetDashboardState(state: unknown) {
     stateJson: JSON.stringify(state),
   });
 }
+
+export function webBridgeTakeOpenAppCommand() {
+  return invoke<string | null>("web_bridge_take_open_app_command");
+}
