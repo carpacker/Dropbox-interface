@@ -1,6 +1,15 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { ChevronUp, File, Folder, KeyRound, Link2, RefreshCw } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import {
+  ChevronUp,
+  File,
+  Folder,
+  KeyRound,
+  Link2,
+  Pause,
+  Play,
+  RefreshCw,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -16,6 +25,7 @@ import { Separator } from "@/components/ui/separator";
 import {
   buildDropboxAuthorizeUrl,
   exchangeDropboxCode,
+  getDropboxLatestCursor,
   getDropboxTemporaryLink,
   listDropboxFolder,
   listDropboxFolderContinue,
@@ -29,11 +39,20 @@ const TOKEN_BUNDLE_KEY = "dropbox-interface:dropbox-token-bundle";
 const APP_KEY_STORAGE_KEY = "dropbox-interface:dropbox-app-key";
 const REDIRECT_URI_STORAGE_KEY = "dropbox-interface:dropbox-redirect-uri";
 const OAUTH_STATE_STORAGE_KEY = "dropbox-interface:dropbox-oauth-state";
+const SYNC_CHECKPOINTS_KEY = "dropbox-interface:dropbox-sync-checkpoints";
+const SLIDESHOW_MS = 2500;
 
 type TokenBundle = {
   accessToken: string;
   refreshToken?: string;
   expiresAt?: number;
+};
+
+type SyncSummary = {
+  checkedAt: number;
+  totalChanges: number;
+  fileChanges: number;
+  folderChanges: number;
 };
 
 function randomString(bytes = 32) {
@@ -117,9 +136,21 @@ export function DropboxBrowserApp() {
   const [loading, setLoading] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [fileBusy, setFileBusy] = useState(false);
+  const [syncBusy, setSyncBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<DropboxEntry | null>(null);
   const [selectedLink, setSelectedLink] = useState<string | null>(null);
+  const [isSlideshowPlaying, setIsSlideshowPlaying] = useState(false);
+  const [syncSummary, setSyncSummary] = useState<SyncSummary | null>(null);
+  const [syncCheckpoints, setSyncCheckpoints] = useState<Record<string, string>>(() => {
+    const raw = localStorage.getItem(SYNC_CHECKPOINTS_KEY);
+    if (!raw) return {};
+    try {
+      return JSON.parse(raw) as Record<string, string>;
+    } catch {
+      return {};
+    }
+  });
 
   const canConnect = tokenInput.trim().length > 0;
 
@@ -218,10 +249,25 @@ export function DropboxBrowserApp() {
     () => entries.filter((entry) => entry[".tag"] === "file"),
     [entries],
   );
+  const imageEntries = useMemo(
+    () =>
+      fileEntries.filter((entry) =>
+        /\.(jpg|jpeg|png|gif|webp|bmp|svg|avif|ico|tif|tiff)$/i.test(
+          entry.path_display ?? entry.path_lower ?? "",
+        ),
+      ),
+    [fileEntries],
+  );
   const selectedPath = selectedFile?.path_display ?? selectedFile?.path_lower ?? "";
   const isImageSelected = Boolean(
     selectedFile && /\.(jpg|jpeg|png|gif|webp|bmp|svg|avif|ico|tif|tiff)$/i.test(selectedPath),
   );
+  const selectedImageIndex = useMemo(
+    () => imageEntries.findIndex((entry) => entry.id === selectedFile?.id),
+    [imageEntries, selectedFile],
+  );
+  const checkpointKey = path || "/";
+  const checkpointCursor = syncCheckpoints[checkpointKey] ?? null;
 
   async function connect() {
     const token = tokenInput.trim();
@@ -310,6 +356,8 @@ export function DropboxBrowserApp() {
     setPath("");
     setSelectedFile(null);
     setSelectedLink(null);
+    setIsSlideshowPlaying(false);
+    setSyncSummary(null);
     setError(null);
   }
 
@@ -338,6 +386,113 @@ export function DropboxBrowserApp() {
     }
     await openUrl(selectedLink);
   }
+
+  function saveCheckpointCursor(nextCursor: string) {
+    const next = { ...syncCheckpoints, [checkpointKey]: nextCursor };
+    setSyncCheckpoints(next);
+    localStorage.setItem(SYNC_CHECKPOINTS_KEY, JSON.stringify(next));
+  }
+
+  async function setCheckpointNow() {
+    if (!connectedToken) return;
+    setSyncBusy(true);
+    setError(null);
+    try {
+      const token = await ensureFreshAccessToken();
+      const latest = await getDropboxLatestCursor(token, path);
+      saveCheckpointCursor(latest.cursor);
+      setSyncSummary(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  async function syncFromCheckpoint() {
+    if (!connectedToken || !checkpointCursor) {
+      return;
+    }
+    setSyncBusy(true);
+    setError(null);
+    try {
+      const token = await ensureFreshAccessToken();
+      let pendingCursor = checkpointCursor;
+      let aggregate: DropboxEntry[] = [];
+      let hasMoreChanges = true;
+      while (hasMoreChanges) {
+        const batch = await listDropboxFolderContinue(token, pendingCursor);
+        aggregate = aggregate.concat(batch.entries);
+        pendingCursor = batch.cursor;
+        hasMoreChanges = batch.has_more;
+      }
+
+      setSyncSummary({
+        checkedAt: Date.now(),
+        totalChanges: aggregate.length,
+        fileChanges: aggregate.filter((entry) => entry[".tag"] === "file").length,
+        folderChanges: aggregate.filter((entry) => entry[".tag"] === "folder").length,
+      });
+      saveCheckpointCursor(pendingCursor);
+      await loadPath(path);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  function toggleSlideshow() {
+    if (imageEntries.length === 0) return;
+    if (selectedImageIndex < 0) {
+      void selectFile(imageEntries[0]);
+    }
+    setIsSlideshowPlaying((prev) => !prev);
+  }
+
+  useEffect(() => {
+    if (!isSlideshowPlaying || imageEntries.length === 0) return;
+    const timer = window.setInterval(() => {
+      const current = selectedImageIndex >= 0 ? selectedImageIndex : 0;
+      const next = (current + 1) % imageEntries.length;
+      void selectFile(imageEntries[next]);
+    }, SLIDESHOW_MS);
+    return () => window.clearInterval(timer);
+  }, [imageEntries, isSlideshowPlaying, selectedImageIndex]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const tag = (event.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+      if (event.key === " ") {
+        event.preventDefault();
+        toggleSlideshow();
+        return;
+      }
+      if (event.key === "Escape") {
+        if (isSlideshowPlaying) {
+          event.preventDefault();
+          setIsSlideshowPlaying(false);
+        }
+        return;
+      }
+      if (imageEntries.length === 0 || isSlideshowPlaying) return;
+
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+        event.preventDefault();
+        const next = Math.min(imageEntries.length - 1, Math.max(0, selectedImageIndex + 1));
+        void selectFile(imageEntries[next]);
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const next = Math.max(0, selectedImageIndex > 0 ? selectedImageIndex - 1 : 0);
+        void selectFile(imageEntries[next]);
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [imageEntries, isSlideshowPlaying, selectedImageIndex]);
 
   return (
     <Card className="flex flex-col gap-0 overflow-hidden">
@@ -431,6 +586,36 @@ export function DropboxBrowserApp() {
         <p className="text-xs text-muted-foreground">
           Current path: <span className="font-mono">{path || "/"}</span>
         </p>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void setCheckpointNow()}
+            disabled={syncBusy || !connectedToken}
+          >
+            Set sync checkpoint
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void syncFromCheckpoint()}
+            disabled={syncBusy || !checkpointCursor || !connectedToken}
+          >
+            Sync changes
+          </Button>
+          <p className="text-xs text-muted-foreground self-center">
+            {checkpointCursor ? "Checkpoint ready" : "No checkpoint for this path"}
+          </p>
+        </div>
+        {syncSummary ? (
+          <p className="text-xs text-muted-foreground">
+            Last sync: {new Date(syncSummary.checkedAt).toLocaleTimeString()} ·{" "}
+            {syncSummary.totalChanges} changes ({syncSummary.fileChanges} files,{" "}
+            {syncSummary.folderChanges} folders)
+          </p>
+        ) : null}
 
         {error ? (
           <p className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -501,17 +686,32 @@ export function DropboxBrowserApp() {
               <p className="text-sm font-medium">
                 {selectedFile ? selectedFile.name : "Select a Dropbox file"}
               </p>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => void openSelectedFile()}
-                disabled={!selectedLink || fileBusy}
-              >
-                Open file
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={toggleSlideshow}
+                  disabled={imageEntries.length === 0}
+                >
+                  {isSlideshowPlaying ? <Pause data-icon="inline-start" /> : <Play data-icon="inline-start" />}
+                  {isSlideshowPlaying ? "Pause" : "Slideshow"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void openSelectedFile()}
+                  disabled={!selectedLink || fileBusy}
+                >
+                  Open file
+                </Button>
+              </div>
             </div>
             <p className="mb-3 text-xs text-muted-foreground font-mono break-all">
               {selectedPath || "No file selected"}
+            </p>
+            <p className="mb-3 text-xs text-muted-foreground">
+              Keyboard: Arrow keys navigate images, Space play/pause slideshow, Esc stop.
             </p>
             <div className="flex min-h-[min(48vh,460px)] items-center justify-center rounded-lg border bg-muted/20 p-3">
               {fileBusy ? (

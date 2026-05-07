@@ -17,6 +17,10 @@ export type DropboxTemporaryLinkResult = {
   link: string;
 };
 
+export type DropboxCursorResult = {
+  cursor: string;
+};
+
 export type DropboxTokenResponse = {
   access_token: string;
   token_type: string;
@@ -117,6 +121,16 @@ export function listDropboxFolder(token: string, path: string) {
 export function listDropboxFolderContinue(token: string, cursor: string) {
   return dropboxRequest<DropboxListResult>(token, "files/list_folder/continue", {
     cursor,
+  });
+}
+
+export function getDropboxLatestCursor(token: string, path: string) {
+  return dropboxRequest<DropboxCursorResult>(token, "files/list_folder/get_latest_cursor", {
+    path,
+    recursive: false,
+    include_deleted: false,
+    include_mounted_folders: true,
+    limit: 200,
   });
 }
 
