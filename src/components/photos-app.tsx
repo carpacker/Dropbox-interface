@@ -20,7 +20,19 @@ import {
   type FsEntry,
 } from "@/lib/tauri-fs";
 
-const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"];
+const IMAGE_EXTENSIONS = [
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".gif",
+  ".webp",
+  ".bmp",
+  ".svg",
+  ".avif",
+  ".ico",
+  ".tif",
+  ".tiff",
+];
 
 function isImageFile(path: string) {
   const lowered = path.toLowerCase();
@@ -105,7 +117,8 @@ export function PhotosApp() {
         <CardHeader className="flex flex-col gap-2 pb-4">
           <CardTitle>Photo browser</CardTitle>
           <CardDescription>
-            Browse local folders and preview common image formats.
+            Browse local folders and preview supported formats:
+            jpg/jpeg/png/gif/webp/bmp/svg/avif/ico/tif/tiff.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4 pt-0">
