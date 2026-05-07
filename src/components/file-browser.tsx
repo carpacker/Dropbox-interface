@@ -1,6 +1,6 @@
-import { ChevronUp, File, Folder, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { File, Folder } from "lucide-react";
 
+import { DirectoryToolbar } from "@/components/directory-toolbar";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -9,83 +9,19 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import {
-  defaultLocalRoot,
-  listDirectory,
-  parentDirectory,
-  type FsEntry,
-} from "@/lib/tauri-fs";
+import type { FsEntry } from "@/lib/tauri-fs";
+import { useDirectoryNav } from "@/lib/use-directory-nav";
 
 export function FileBrowser() {
-  const [currentPath, setCurrentPath] = useState("");
-  const [pathInput, setPathInput] = useState("");
-  const [entries, setEntries] = useState<FsEntry[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const nav = useDirectoryNav();
 
-  const loadPath = useCallback(async (path: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const rows = await listDirectory(path);
-      setCurrentPath(path);
-      setPathInput(path);
-      setEntries(rows);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const root = await defaultLocalRoot();
-        if (!cancelled) {
-          await loadPath(root);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : String(e));
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [loadPath]);
-
-  async function handleGoUp() {
-    if (!currentPath) {
-      return;
-    }
-    try {
-      const parent = await parentDirectory(currentPath);
-      if (parent) {
-        await loadPath(parent);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  async function handleSubmitPath(event: React.FormEvent) {
-    event.preventDefault();
-    await loadPath(pathInput.trim());
-  }
-
-  async function handleOpenEntry(entry: FsEntry) {
+  function handleOpenEntry(entry: FsEntry) {
     if (!entry.isDirectory) {
       return;
     }
-    await loadPath(entry.path);
+    void nav.loadPath(entry.path);
   }
 
   return (
@@ -98,71 +34,38 @@ export function FileBrowser() {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4 pt-0">
-        <form
-          className="flex flex-col gap-3 sm:flex-row sm:items-center"
-          onSubmit={handleSubmitPath}
-        >
-          <Input
-            value={pathInput}
-            onChange={(e) => setPathInput(e.currentTarget.value)}
-            placeholder="Enter a folder path"
-            aria-label="Folder path"
-            className="min-w-0 flex-1 font-mono text-xs sm:text-sm"
-          />
-          <div className="flex shrink-0 flex-row gap-2">
-            <Button type="submit" disabled={loading}>
-              Go
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              disabled={loading || !currentPath}
-              onClick={() => void handleGoUp()}
-              aria-label="Parent folder"
-            >
-              <ChevronUp data-icon="inline-start" />
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              disabled={loading || !currentPath}
-              onClick={() => void loadPath(currentPath)}
-              aria-label="Refresh listing"
-            >
-              <RefreshCw data-icon="inline-start" />
-            </Button>
-          </div>
-        </form>
-
-        {error ? (
-          <p className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {error}
-          </p>
-        ) : null}
+        <DirectoryToolbar
+          pathInput={nav.pathInput}
+          onPathInputChange={nav.setPathInput}
+          onSubmit={() => void nav.submitPath()}
+          onGoUp={() => void nav.goUp()}
+          onRefresh={() => void nav.refresh()}
+          loading={nav.loading}
+          hasPath={!!nav.currentPath}
+          error={nav.error}
+        />
 
         <Separator />
 
         <ScrollArea className="h-[min(55vh,520px)] rounded-lg border">
           <div className="flex flex-col gap-1 p-2">
-            {loading ? (
+            {nav.loading ? (
               <p className="px-2 py-6 text-sm text-muted-foreground">
                 Loading…
               </p>
-            ) : entries.length === 0 ? (
+            ) : nav.entries.length === 0 ? (
               <p className="px-2 py-6 text-sm text-muted-foreground">
                 This folder is empty.
               </p>
             ) : (
-              entries.map((entry) => (
+              nav.entries.map((entry) => (
                 <Button
                   key={entry.path}
                   type="button"
                   variant="ghost"
                   className="h-auto w-full justify-start gap-2 px-2 py-1.5 font-normal"
                   disabled={!entry.isDirectory}
-                  onClick={() => void handleOpenEntry(entry)}
+                  onClick={() => handleOpenEntry(entry)}
                 >
                   {entry.isDirectory ? (
                     <Folder data-icon="inline-start" />
