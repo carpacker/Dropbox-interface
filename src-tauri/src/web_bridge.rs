@@ -205,7 +205,17 @@ impl WebBridgeManager {
                             .ok()
                             .and_then(|v| v.get("app").and_then(|a| a.as_str()).map(|s| s.to_string()));
                         match app.as_deref() {
-                            Some("dashboard" | "workspace" | "photos" | "dropbox" | "web") => {
+                            Some(
+                                "dashboard"
+                                | "workspace"
+                                | "dropbox"
+                                | "web"
+                                | "photos"
+                                | "social_media"
+                                | "shoots_field"
+                                | "shoots_studio"
+                                | "assets",
+                            ) => {
                                 if let Ok(mut queue) = open_app_queue.lock() {
                                     *queue = app;
                                 }

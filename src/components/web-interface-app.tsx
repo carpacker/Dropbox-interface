@@ -103,7 +103,18 @@ export function WebInterfaceApp() {
     }
   }
 
-  async function postOpenAppCommand(app: "dashboard" | "workspace" | "photos" | "dropbox" | "web") {
+  async function postOpenAppCommand(
+    app:
+      | "dashboard"
+      | "workspace"
+      | "dropbox"
+      | "web"
+      | "photos"
+      | "social_media"
+      | "shoots_field"
+      | "shoots_studio"
+      | "assets",
+  ) {
     if (!config.baseUrl.trim()) return;
     setBusy(true);
     try {

@@ -2,7 +2,6 @@ import {
   ArrowLeft,
   Edit3,
   Eye,
-  FolderOpen,
   Globe,
   GripVertical,
   Home,
@@ -18,7 +17,7 @@ import { type ComponentType, useEffect, useMemo, useState } from "react";
 
 import { DesktopWorkspaceApp } from "@/components/desktop-workspace-app";
 import { DropboxBrowserApp } from "@/components/dropbox-browser-app";
-import { PhotosApp } from "@/components/photos-app";
+import { renderInternalSubapplication } from "@/components/internal-subapplications";
 import { WebInterfaceApp } from "@/components/web-interface-app";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,16 +42,23 @@ import {
   webBridgeTakeDashboardEditCommand,
   webBridgeTakeOpenAppCommand,
 } from "@/lib/web-bridge";
+import {
+  INTERNAL_APP_ORDER,
+  getInternalAppDefinition,
+  type InternalAppId,
+} from "@/lib/internal-apps";
 
 const DASHBOARD_LAYOUT_KEY = "dropbox-interface:dashboard-layout-v1";
 const DASHBOARD_EDIT_LOCK_KEY = "dropbox-interface:dashboard-edit-locked";
 
-type AppKey = "workspace" | "photos" | "dropbox" | "web";
-type ActiveApp = "dashboard" | AppKey;
+type ToolKey = "workspace" | "dropbox" | "web";
+type ActiveSurface = "dashboard" | ToolKey | InternalAppId;
 type CardSize = "compact" | "wide" | "tall";
 
+const ALL_TOOL_KEYS: ToolKey[] = ["workspace", "dropbox", "web"];
+
 type AppDefinition = {
-  key: AppKey;
+  key: ToolKey;
   title: string;
   description: string;
   launchLabel: string;
@@ -60,14 +66,13 @@ type AppDefinition = {
 };
 
 type DashboardLayout = {
-  order: AppKey[];
-  sizes: Record<AppKey, CardSize>;
+  order: ToolKey[];
+  sizes: Record<ToolKey, CardSize>;
 };
 
-const DEFAULT_ORDER: AppKey[] = ["workspace", "photos", "dropbox", "web"];
-const DEFAULT_SIZES: Record<AppKey, CardSize> = {
+const DEFAULT_ORDER: ToolKey[] = ["workspace", "dropbox", "web"];
+const DEFAULT_SIZES: Record<ToolKey, CardSize> = {
   workspace: "wide",
-  photos: "compact",
   dropbox: "compact",
   web: "compact",
 };
@@ -76,30 +81,23 @@ const APP_DEFINITIONS: AppDefinition[] = [
   {
     key: "workspace",
     title: "Desktop Workspace",
-    description: "Open the desktop shell and browse folders inside a single app.",
-    launchLabel: "Launch workspace app",
+    description: "Files browser and terminal in one desktop shell.",
+    launchLabel: "Open workspace",
     icon: MonitorCog,
-  },
-  {
-    key: "photos",
-    title: "Photo Viewer",
-    description: "Browse directories and preview supported image files quickly.",
-    launchLabel: "Open photo app",
-    icon: FolderOpen,
-  },
-  {
-    key: "web",
-    title: "Web Interface",
-    description: "Configure a browser/web-client bridge profile for this desktop app.",
-    launchLabel: "Open web interface",
-    icon: Globe,
   },
   {
     key: "dropbox",
     title: "Dropbox Explorer",
-    description: "Connect with Dropbox token and browse cloud files/folders.",
-    launchLabel: "Open Dropbox app",
+    description: "Connect with Dropbox and browse cloud files.",
+    launchLabel: "Open Dropbox",
     icon: Link2,
+  },
+  {
+    key: "web",
+    title: "Web Interface",
+    description: "Configure the local HTTP bridge for remote control.",
+    launchLabel: "Open web bridge",
+    icon: Globe,
   },
 ];
 
@@ -114,12 +112,21 @@ function restoreLayout(): DashboardLayout {
     const parsed = JSON.parse(raw) as Partial<DashboardLayout>;
     const inputOrder = Array.isArray(parsed.order) ? parsed.order : [];
     const deduped = inputOrder.filter((key, idx) => inputOrder.indexOf(key) === idx);
-    const validOrder = deduped.filter(
-      (key): key is AppKey => DEFAULT_ORDER.includes(key as AppKey),
+    const validOrder = deduped.filter((key): key is ToolKey =>
+      ALL_TOOL_KEYS.includes(key as ToolKey),
     );
     const missing = DEFAULT_ORDER.filter((key) => !validOrder.includes(key));
     const order = [...validOrder, ...missing];
-    const sizes = { ...DEFAULT_SIZES, ...(parsed.sizes ?? {}) } as Record<AppKey, CardSize>;
+    const sizes = { ...DEFAULT_SIZES };
+    if (parsed.sizes && typeof parsed.sizes === "object") {
+      const rawSizes = parsed.sizes as Record<string, unknown>;
+      for (const key of ALL_TOOL_KEYS) {
+        const value = rawSizes[key];
+        if (value === "compact" || value === "wide" || value === "tall") {
+          sizes[key] = value;
+        }
+      }
+    }
     return { order, sizes };
   } catch {
     return fallback;
@@ -130,28 +137,46 @@ function persistLayout(layout: DashboardLayout) {
   localStorage.setItem(DASHBOARD_LAYOUT_KEY, JSON.stringify(layout));
 }
 
+function isActiveSurface(value: string): value is ActiveSurface {
+  if (value === "dashboard") {
+    return true;
+  }
+  if (ALL_TOOL_KEYS.includes(value as ToolKey)) {
+    return true;
+  }
+  return INTERNAL_APP_ORDER.includes(value as InternalAppId);
+}
+
 function App() {
-  const [activeApp, setActiveApp] = useState<ActiveApp>("dashboard");
+  const [activeApp, setActiveApp] = useState<ActiveSurface>("dashboard");
   const [layout, setLayout] = useState<DashboardLayout>(() => restoreLayout());
   const [editMode, setEditMode] = useState(false);
   const [layoutLocked, setLayoutLocked] = useState(
     () => localStorage.getItem(DASHBOARD_EDIT_LOCK_KEY) === "true",
   );
-  const [draggingApp, setDraggingApp] = useState<AppKey | null>(null);
-  const [dragOverKey, setDragOverKey] = useState<AppKey | null>(null);
+  const [draggingTool, setDraggingTool] = useState<ToolKey | null>(null);
+  const [dragOverKey, setDragOverKey] = useState<ToolKey | null>(null);
 
   const title = useMemo(() => {
-    switch (activeApp) {
-      case "workspace":
-        return "Desktop Workspace";
-      case "photos":
-        return "Photos";
-      case "dropbox":
-        return "Dropbox Explorer";
-      case "web":
-        return "Web Interface";
-      default:
-        return "Dashboard";
+    if (activeApp === "dashboard") {
+      return "Dashboard";
+    }
+    if (ALL_TOOL_KEYS.includes(activeApp as ToolKey)) {
+      switch (activeApp as ToolKey) {
+        case "workspace":
+          return "Desktop Workspace";
+        case "dropbox":
+          return "Dropbox Explorer";
+        case "web":
+          return "Web Interface";
+        default:
+          return "Dashboard";
+      }
+    }
+    try {
+      return getInternalAppDefinition(activeApp as InternalAppId).title;
+    } catch {
+      return "Dashboard";
     }
   }, [activeApp]);
 
@@ -176,15 +201,8 @@ function App() {
       void webBridgeTakeOpenAppCommand()
         .then((cmd) => {
           if (!cmd) return;
-          const next = cmd as ActiveApp;
-          if (
-            next === "dashboard" ||
-            next === "workspace" ||
-            next === "photos" ||
-            next === "dropbox" ||
-            next === "web"
-          ) {
-            setActiveApp(next);
+          if (isActiveSurface(cmd)) {
+            setActiveApp(cmd);
           }
         })
         .catch(() => {});
@@ -210,7 +228,7 @@ function App() {
     return () => window.clearInterval(timer);
   }, []);
 
-  function moveCard(fromKey: AppKey, toKey: AppKey) {
+  function moveCard(fromKey: ToolKey, toKey: ToolKey) {
     if (fromKey === toKey) return;
     const next = [...layout.order];
     const fromIdx = next.indexOf(fromKey);
@@ -223,7 +241,7 @@ function App() {
     persistLayout(updated);
   }
 
-  function updateCardSize(key: AppKey, size: CardSize) {
+  function updateCardSize(key: ToolKey, size: CardSize) {
     const updated = {
       ...layout,
       sizes: { ...layout.sizes, [key]: size },
@@ -246,7 +264,7 @@ function App() {
     localStorage.setItem(DASHBOARD_EDIT_LOCK_KEY, next ? "true" : "false");
   }
 
-  function cardSpanClass(key: AppKey) {
+  function cardSpanClass(key: ToolKey) {
     const size = layout.sizes[key];
     if (size === "wide") return "md:col-span-2";
     if (size === "tall") return "md:row-span-2";
@@ -254,7 +272,7 @@ function App() {
   }
 
   function endDragSession() {
-    setDraggingApp(null);
+    setDraggingTool(null);
     setDragOverKey(null);
   }
 
@@ -279,11 +297,12 @@ function App() {
               Dropbox Interface
             </h1>
             <p className="text-muted-foreground text-xs sm:text-sm">
-              Local workspace, photos, Dropbox, and a web bridge — one desktop shell.
+              Internal workflow apps plus workspace, Dropbox, and the web bridge — one desktop shell.
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+        <div className="flex w-full flex-col gap-3 sm:items-end">
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
           {activeApp !== "dashboard" ? (
             <Button
               type="button"
@@ -356,16 +375,6 @@ function App() {
                   variant="ghost"
                   size="sm"
                   className="h-8 px-2.5"
-                  onClick={() => setActiveApp("photos")}
-                >
-                  <FolderOpen className="size-4" />
-                  <span className="ml-1 hidden md:inline">Photos</span>
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 px-2.5"
                   onClick={() => setActiveApp("dropbox")}
                 >
                   <Link2 className="size-4" />
@@ -389,6 +398,27 @@ function App() {
               <span className="font-medium text-foreground">{title}</span>
             </div>
           )}
+          </div>
+          {activeApp === "dashboard" ? (
+            <div className="flex w-full flex-wrap items-center justify-end gap-2 border-t border-border/60 pt-3">
+              <span className="text-xs font-medium text-muted-foreground">Internal apps</span>
+              {INTERNAL_APP_ORDER.map((id) => {
+                const def = getInternalAppDefinition(id);
+                return (
+                  <Button
+                    key={id}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 shadow-sm"
+                    onClick={() => setActiveApp(id)}
+                  >
+                    {def.title}
+                  </Button>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
       </header>
 
@@ -401,28 +431,83 @@ function App() {
                 {layoutLocked ? (
                   <>
                     <span className="font-medium text-foreground">Layout is locked.</span> Unlock to drag
-                    tiles by the grip handle.
+                    tool tiles by the grip handle.
                   </>
                 ) : (
                   <>
-                    <span className="font-medium text-foreground">Drag the grip</span> on each tile to
-                    reorder. Lock when you are happy with the layout.
+                    <span className="font-medium text-foreground">Drag the grip</span> on each{" "}
+                    <span className="font-medium text-foreground">Tools</span> tile to reorder. Internal
+                    applications stay fixed until we add layout controls for them.
                   </>
                 )}
               </p>
             </div>
           ) : null}
-          <div className="mx-auto grid w-full max-w-6xl gap-4 md:auto-rows-[minmax(180px,auto)] md:grid-cols-2 xl:grid-cols-3">
+          <div className="mx-auto w-full max-w-6xl space-y-3">
+            <div className="space-y-1">
+              <h2 className="text-sm font-semibold text-foreground">Internal applications</h2>
+              <p className="text-xs text-muted-foreground">
+                Workflow starting points. The photo viewer is a shared internal module embedded where you
+                need previews—not a separate generic app tile.
+              </p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {INTERNAL_APP_ORDER.map((id) => {
+                const def = getInternalAppDefinition(id);
+                const Icon = def.icon;
+                return (
+                  <Card
+                    key={id}
+                    className="flex flex-col border-primary/15 shadow-sm ring-1 ring-primary/10"
+                  >
+                    <CardHeader className="gap-2">
+                      <CardTitle className="flex items-start gap-3 text-base">
+                        <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                          <Icon className="size-5" aria-hidden />
+                        </span>
+                        <span className="leading-snug">{def.title}</span>
+                      </CardTitle>
+                      <CardDescription>{def.description}</CardDescription>
+                    </CardHeader>
+                    <CardContent className="mt-auto flex flex-col gap-3">
+                      <p className="text-xs text-muted-foreground">{def.subtitle}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          className="shadow-sm"
+                          onClick={() => setActiveApp(id)}
+                        >
+                          {def.openLabel}
+                        </Button>
+                        <span className="rounded-md border border-dashed border-muted-foreground/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground">
+                          Internal
+                        </span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mx-auto w-full max-w-6xl space-y-3">
+            <div className="space-y-1">
+              <h2 className="text-sm font-semibold text-foreground">Tools</h2>
+              <p className="text-xs text-muted-foreground">
+                Utilities and integrations. These tiles participate in dashboard layout edit mode.
+              </p>
+            </div>
+            <div className="grid gap-4 md:auto-rows-[minmax(180px,auto)] md:grid-cols-2 xl:grid-cols-3">
           {orderedApps.map((app) => {
             const Icon = app.icon;
-            const isDragging = draggingApp === app.key;
-            const isDropTarget = Boolean(draggingApp && dragOverKey === app.key && draggingApp !== app.key);
+            const isDragging = draggingTool === app.key;
+            const isDropTarget = Boolean(draggingTool && dragOverKey === app.key && draggingTool !== app.key);
             const canDrag = editMode && !layoutLocked;
             return (
               <Card
                 key={app.key}
                 onDragOver={(e) => {
-                  if (!draggingApp || !canDrag) return;
+                  if (!draggingTool || !canDrag) return;
                   e.preventDefault();
                   e.dataTransfer.dropEffect = "move";
                   setDragOverKey(app.key);
@@ -434,8 +519,8 @@ function App() {
                 }}
                 onDrop={(e) => {
                   e.preventDefault();
-                  if (draggingApp && canDrag) {
-                    moveCard(draggingApp, app.key);
+                  if (draggingTool && canDrag) {
+                    moveCard(draggingTool, app.key);
                   }
                   endDragSession();
                 }}
@@ -475,7 +560,7 @@ function App() {
                         }
                         e.dataTransfer.effectAllowed = "move";
                         e.dataTransfer.setData("text/plain", app.key);
-                        setDraggingApp(app.key);
+                        setDraggingTool(app.key);
                       }}
                       onDragEnd={endDragSession}
                     >
@@ -511,14 +596,15 @@ function App() {
                       {canDrag
                         ? "Drag the grip to reorder"
                         : layoutLocked && editMode
-                          ? "Unlock to reorder tiles"
-                          : "Edit layout to rearrange tiles"}
+                          ? "Unlock to reorder tool tiles"
+                          : "Edit layout to rearrange tool tiles"}
                     </p>
                   </div>
                 </CardContent>
               </Card>
             );
           })}
+            </div>
           </div>
         </>
       ) : null}
@@ -528,9 +614,9 @@ function App() {
           <DesktopWorkspaceApp />
         </div>
       ) : null}
-      {activeApp === "photos" ? (
+      {INTERNAL_APP_ORDER.includes(activeApp as InternalAppId) ? (
         <div className="mx-auto w-full max-w-6xl">
-          <PhotosApp />
+          {renderInternalSubapplication(activeApp as InternalAppId)}
         </div>
       ) : null}
       {activeApp === "dropbox" ? (

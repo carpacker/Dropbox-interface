@@ -44,12 +44,17 @@ const GRID_COLUMNS = 4;
 const MAX_THUMBNAILS_TO_PRELOAD = 48;
 const SLIDESHOW_MS = 2200;
 
+export type PhotosAppProps = {
+  variant?: "page" | "embedded";
+};
+
 function isImageFile(path: string) {
   const lowered = path.toLowerCase();
   return IMAGE_EXTENSIONS.some((ext) => lowered.endsWith(ext));
 }
 
-export function PhotosApp() {
+export function PhotosApp({ variant = "page" }: PhotosAppProps) {
+  const embedded = variant === "embedded";
   const [currentPath, setCurrentPath] = useState("");
   const [pathInput, setPathInput] = useState("");
   const [entries, setEntries] = useState<FsEntry[]>([]);
@@ -237,10 +242,11 @@ export function PhotosApp() {
     <div className="grid gap-4 lg:grid-cols-[minmax(0,380px),minmax(0,1fr)]">
       <Card className="flex flex-col gap-0 overflow-hidden">
         <CardHeader className="flex flex-col gap-2 pb-4">
-          <CardTitle>Photo browser</CardTitle>
+          <CardTitle>{embedded ? "Photo viewer module" : "Photo browser"}</CardTitle>
           <CardDescription>
-            Browse local folders and preview supported formats:
-            jpg/jpeg/png/gif/webp/bmp/svg/avif/ico/tif/tiff.
+            {embedded
+              ? "Shared internal viewer for this app shell — browse folders and preview supported formats inline."
+              : "Browse local folders and preview supported formats: jpg/jpeg/png/gif/webp/bmp/svg/avif/ico/tif/tiff."}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4 pt-0">
@@ -293,7 +299,11 @@ export function PhotosApp() {
 
           <Separator />
 
-          <ScrollArea className="h-[min(60vh,560px)] rounded-lg border">
+          <ScrollArea
+            className={`rounded-lg border ${
+              embedded ? "h-[min(52vh,480px)]" : "h-[min(60vh,560px)]"
+            }`}
+          >
             <div className="flex flex-col gap-1 p-2">
               {loading ? (
                 <p className="px-2 py-6 text-sm text-muted-foreground">Loading…</p>
@@ -332,7 +342,9 @@ export function PhotosApp() {
         </CardHeader>
         <CardContent className="pt-0">
           <div className="mb-3 rounded-lg border p-2">
-            <ScrollArea className="h-[min(26vh,220px)]">
+            <ScrollArea
+              className={embedded ? "h-[min(22vh,180px)]" : "h-[min(26vh,220px)]"}
+            >
               <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
                 {imageEntries.map((entry) => {
                   const thumb = thumbnailUrls[entry.path];
@@ -389,7 +401,11 @@ export function PhotosApp() {
               </p>
             ) : null}
           </div>
-          <div className="flex min-h-[min(46vh,420px)] items-center justify-center rounded-lg border bg-muted/20 p-3">
+          <div
+            className={`flex items-center justify-center rounded-lg border bg-muted/20 p-3 ${
+              embedded ? "min-h-[min(40vh,360px)]" : "min-h-[min(46vh,420px)]"
+            }`}
+          >
             {previewLoading ? (
               <p className="text-sm text-muted-foreground">Loading image…</p>
             ) : selectedDataUrl ? (
