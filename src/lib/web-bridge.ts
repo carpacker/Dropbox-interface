@@ -9,6 +9,11 @@ export type WebBridgeStatus = {
   lastError: string | null;
 };
 
+export type DashboardEditCommand = {
+  editMode?: boolean;
+  layoutLocked?: boolean;
+};
+
 export function webBridgeStart(params: {
   bindAddr: string;
   allowOrigin: string;
@@ -33,4 +38,8 @@ export function webBridgeSetDashboardState(state: unknown) {
 
 export function webBridgeTakeOpenAppCommand() {
   return invoke<string | null>("web_bridge_take_open_app_command");
+}
+
+export function webBridgeTakeDashboardEditCommand() {
+  return invoke<DashboardEditCommand | null>("web_bridge_take_dashboard_edit_command");
 }

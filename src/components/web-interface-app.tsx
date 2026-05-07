@@ -103,6 +103,48 @@ export function WebInterfaceApp() {
     }
   }
 
+  async function postOpenAppCommand(app: "dashboard" | "workspace" | "photos" | "dropbox" | "web") {
+    if (!config.baseUrl.trim()) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/commands/open-app`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(config.apiKey ? { "x-bridge-key": config.apiKey } : {}),
+        },
+        body: JSON.stringify({ app }),
+      });
+      const payload = await res.text();
+      setStatusText(`Open app command (${app}): ${res.status} ${payload}`);
+    } catch (e) {
+      setStatusText(`Open app command failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function postDashboardEditCommand(command: { editMode?: boolean; layoutLocked?: boolean }) {
+    if (!config.baseUrl.trim()) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/commands/dashboard-edit`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(config.apiKey ? { "x-bridge-key": config.apiKey } : {}),
+        },
+        body: JSON.stringify(command),
+      });
+      const payload = await res.text();
+      setStatusText(`Dashboard edit command: ${res.status} ${payload}`);
+    } catch (e) {
+      setStatusText(`Dashboard edit command failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function refreshBridgeStatus() {
     setBusy(true);
     try {
@@ -218,6 +260,20 @@ export function WebInterfaceApp() {
               Fetch dashboard state
             </Button>
           </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="secondary" onClick={() => void postOpenAppCommand("dashboard")} disabled={busy}>
+              Open dashboard
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => void postDashboardEditCommand({ editMode: true })} disabled={busy}>
+              Enable edit mode
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void postDashboardEditCommand({ layoutLocked: true })} disabled={busy}>
+              Lock layout
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void postDashboardEditCommand({ layoutLocked: false })} disabled={busy}>
+              Unlock layout
+            </Button>
+          </div>
           {statusText ? (
             <p className="rounded-lg border px-3 py-2 text-sm text-muted-foreground">
               {statusText}
@@ -267,8 +323,8 @@ export function WebInterfaceApp() {
           </div>
           <Separator />
           <p className="text-xs text-muted-foreground">
-            Live bridge now exposes `/health` and `/api/bridge/status` with optional `x-bridge-key`.
-            Use this panel to start/stop bridge runtime and validate web-client access.
+            Live bridge exposes `/health`, `/api/bridge/status`, `/api/dashboard/state`,
+            `/api/commands/open-app`, and `/api/commands/dashboard-edit` with optional `x-bridge-key`.
           </p>
         </CardContent>
       </Card>

@@ -32,12 +32,20 @@ struct BridgeRuntime {
     join: JoinHandle<()>,
 }
 
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardEditCommand {
+    pub edit_mode: Option<bool>,
+    pub layout_locked: Option<bool>,
+}
+
 pub struct WebBridgeManager {
     runtime: Mutex<Option<BridgeRuntime>>,
     request_count: Arc<AtomicU64>,
     last_error: Arc<Mutex<Option<String>>>,
     dashboard_state_json: Arc<Mutex<String>>,
     pending_open_app: Arc<Mutex<Option<String>>>,
+    pending_dashboard_edit: Arc<Mutex<Option<DashboardEditCommand>>>,
 }
 
 impl Default for WebBridgeManager {
@@ -48,6 +56,7 @@ impl Default for WebBridgeManager {
             last_error: Arc::new(Mutex::new(None)),
             dashboard_state_json: Arc::new(Mutex::new("{}".to_string())),
             pending_open_app: Arc::new(Mutex::new(None)),
+            pending_dashboard_edit: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -103,6 +112,7 @@ impl WebBridgeManager {
         let error_store = Arc::clone(&self.last_error);
         let dashboard_state = Arc::clone(&self.dashboard_state_json);
         let open_app_queue = Arc::clone(&self.pending_open_app);
+        let dashboard_edit_queue = Arc::clone(&self.pending_dashboard_edit);
 
         self.request_count.store(0, Ordering::SeqCst);
         self.write_last_error(None);
@@ -216,6 +226,42 @@ impl WebBridgeManager {
                             }
                         }
                     }
+                    (&Method::Post, "/api/commands/dashboard-edit") => {
+                        let mut body = String::new();
+                        let mut reader = req.as_reader();
+                        if reader.read_to_string(&mut body).is_err() {
+                            respond_json(
+                                req,
+                                400,
+                                "{\"error\":\"invalid request body\"}".to_string(),
+                                &allow_origin_for_thread,
+                            );
+                            continue;
+                        }
+
+                        let parsed: Result<DashboardEditCommand, _> = serde_json::from_str(&body);
+                        match parsed {
+                            Ok(cmd) if cmd.edit_mode.is_some() || cmd.layout_locked.is_some() => {
+                                if let Ok(mut queue) = dashboard_edit_queue.lock() {
+                                    *queue = Some(cmd);
+                                }
+                                respond_json(
+                                    req,
+                                    200,
+                                    "{\"ok\":true}".to_string(),
+                                    &allow_origin_for_thread,
+                                );
+                            }
+                            _ => {
+                                respond_json(
+                                    req,
+                                    400,
+                                    "{\"error\":\"invalid dashboard edit command\"}".to_string(),
+                                    &allow_origin_for_thread,
+                                );
+                            }
+                        }
+                    }
                     _ => {
                         respond_json(
                             req,
@@ -295,6 +341,14 @@ impl WebBridgeManager {
             .map_err(|_| "web bridge open-app queue mutex poisoned".to_string())?;
         Ok(guard.take())
     }
+
+    fn take_dashboard_edit_command_internal(&self) -> Result<Option<DashboardEditCommand>, String> {
+        let mut guard = self
+            .pending_dashboard_edit
+            .lock()
+            .map_err(|_| "web bridge dashboard-edit queue mutex poisoned".to_string())?;
+        Ok(guard.take())
+    }
 }
 
 #[tauri::command]
@@ -332,4 +386,11 @@ pub fn web_bridge_take_open_app_command(
     bridge: State<'_, WebBridgeManager>,
 ) -> Result<Option<String>, String> {
     bridge.take_open_app_command_internal()
+}
+
+#[tauri::command]
+pub fn web_bridge_take_dashboard_edit_command(
+    bridge: State<'_, WebBridgeManager>,
+) -> Result<Option<DashboardEditCommand>, String> {
+    bridge.take_dashboard_edit_command_internal()
 }

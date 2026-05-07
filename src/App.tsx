@@ -38,7 +38,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { webBridgeSetDashboardState, webBridgeTakeOpenAppCommand } from "@/lib/web-bridge";
+import {
+  webBridgeSetDashboardState,
+  webBridgeTakeDashboardEditCommand,
+  webBridgeTakeOpenAppCommand,
+} from "@/lib/web-bridge";
 
 const DASHBOARD_LAYOUT_KEY = "dropbox-interface:dashboard-layout-v1";
 const DASHBOARD_EDIT_LOCK_KEY = "dropbox-interface:dashboard-edit-locked";
@@ -181,6 +185,24 @@ function App() {
             next === "web"
           ) {
             setActiveApp(next);
+          }
+        })
+        .catch(() => {});
+
+      void webBridgeTakeDashboardEditCommand()
+        .then((cmd) => {
+          if (!cmd) return;
+
+          if (typeof cmd.editMode === "boolean") {
+            setEditMode(cmd.editMode);
+            if (!cmd.editMode) {
+              endDragSession();
+            }
+          }
+
+          if (typeof cmd.layoutLocked === "boolean") {
+            setLayoutLocked(cmd.layoutLocked);
+            localStorage.setItem(DASHBOARD_EDIT_LOCK_KEY, cmd.layoutLocked ? "true" : "false");
           }
         })
         .catch(() => {});
