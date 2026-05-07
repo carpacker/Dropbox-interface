@@ -14,6 +14,21 @@ export type DashboardEditCommand = {
   layoutLocked?: boolean;
 };
 
+export type OpenAppCommand = {
+  app: string;
+  initialFolder?: string | null;
+};
+
+export type LayoutLanePatch = {
+  order?: string[];
+  sizes?: Record<string, string>;
+};
+
+export type DashboardLayoutCommand = {
+  tools?: LayoutLanePatch;
+  internal?: LayoutLanePatch;
+};
+
 export function webBridgeStart(params: {
   bindAddr: string;
   allowOrigin: string;
@@ -37,9 +52,13 @@ export function webBridgeSetDashboardState(state: unknown) {
 }
 
 export function webBridgeTakeOpenAppCommand() {
-  return invoke<string | null>("web_bridge_take_open_app_command");
+  return invoke<OpenAppCommand | null>("web_bridge_take_open_app_command");
 }
 
 export function webBridgeTakeDashboardEditCommand() {
   return invoke<DashboardEditCommand | null>("web_bridge_take_dashboard_edit_command");
+}
+
+export function webBridgeTakeDashboardLayoutCommand() {
+  return invoke<DashboardLayoutCommand | null>("web_bridge_take_dashboard_layout_command");
 }

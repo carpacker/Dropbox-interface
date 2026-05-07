@@ -1,5 +1,6 @@
 use serde::Serialize;
-use std::io::{Read, Write};
+use std::collections::HashMap;
+use std::io::Write;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -39,13 +40,40 @@ pub struct DashboardEditCommand {
     pub layout_locked: Option<bool>,
 }
 
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenAppCommand {
+    pub app: String,
+    #[serde(default)]
+    pub initial_folder: Option<String>,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutLanePatch {
+    #[serde(default)]
+    pub order: Option<Vec<String>>,
+    #[serde(default)]
+    pub sizes: Option<HashMap<String, String>>,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardLayoutCommand {
+    #[serde(default)]
+    pub tools: Option<LayoutLanePatch>,
+    #[serde(default)]
+    pub internal: Option<LayoutLanePatch>,
+}
+
 pub struct WebBridgeManager {
     runtime: Mutex<Option<BridgeRuntime>>,
     request_count: Arc<AtomicU64>,
     last_error: Arc<Mutex<Option<String>>>,
     dashboard_state_json: Arc<Mutex<String>>,
-    pending_open_app: Arc<Mutex<Option<String>>>,
+    pending_open_app: Arc<Mutex<Option<OpenAppCommand>>>,
     pending_dashboard_edit: Arc<Mutex<Option<DashboardEditCommand>>>,
+    pending_dashboard_layout: Arc<Mutex<Option<DashboardLayoutCommand>>>,
 }
 
 impl Default for WebBridgeManager {
@@ -57,6 +85,7 @@ impl Default for WebBridgeManager {
             dashboard_state_json: Arc::new(Mutex::new("{}".to_string())),
             pending_open_app: Arc::new(Mutex::new(None)),
             pending_dashboard_edit: Arc::new(Mutex::new(None)),
+            pending_dashboard_layout: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -113,6 +142,7 @@ impl WebBridgeManager {
         let dashboard_state = Arc::clone(&self.dashboard_state_json);
         let open_app_queue = Arc::clone(&self.pending_open_app);
         let dashboard_edit_queue = Arc::clone(&self.pending_dashboard_edit);
+        let dashboard_layout_queue = Arc::clone(&self.pending_dashboard_layout);
 
         self.request_count.store(0, Ordering::SeqCst);
         self.write_last_error(None);
@@ -190,7 +220,7 @@ impl WebBridgeManager {
                     }
                     (&Method::Post, "/api/commands/open-app") => {
                         let mut body = String::new();
-                        let mut reader = req.as_reader();
+                        let reader = req.as_reader();
                         if reader.read_to_string(&mut body).is_err() {
                             respond_json(
                                 req,
@@ -200,24 +230,31 @@ impl WebBridgeManager {
                             );
                             continue;
                         }
-                        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
-                        let app = parsed
-                            .ok()
-                            .and_then(|v| v.get("app").and_then(|a| a.as_str()).map(|s| s.to_string()));
-                        match app.as_deref() {
-                            Some(
-                                "dashboard"
-                                | "workspace"
-                                | "dropbox"
-                                | "web"
-                                | "photos"
-                                | "social_media"
-                                | "shoots_field"
-                                | "shoots_studio"
-                                | "assets",
-                            ) => {
+                        let parsed: Result<OpenAppCommand, _> = serde_json::from_str(&body);
+                        let cmd = match parsed {
+                            Ok(c) => c,
+                            Err(_) => {
+                                respond_json(
+                                    req,
+                                    400,
+                                    "{\"error\":\"invalid request body\"}".to_string(),
+                                    &allow_origin_for_thread,
+                                );
+                                continue;
+                            }
+                        };
+                        match cmd.app.as_str() {
+                            "dashboard"
+                            | "workspace"
+                            | "dropbox"
+                            | "web"
+                            | "photos"
+                            | "social_media"
+                            | "shoots_field"
+                            | "shoots_studio"
+                            | "assets" => {
                                 if let Ok(mut queue) = open_app_queue.lock() {
-                                    *queue = app;
+                                    *queue = Some(cmd);
                                 }
                                 respond_json(
                                     req,
@@ -238,7 +275,7 @@ impl WebBridgeManager {
                     }
                     (&Method::Post, "/api/commands/dashboard-edit") => {
                         let mut body = String::new();
-                        let mut reader = req.as_reader();
+                        let reader = req.as_reader();
                         if reader.read_to_string(&mut body).is_err() {
                             respond_json(
                                 req,
@@ -267,6 +304,60 @@ impl WebBridgeManager {
                                     req,
                                     400,
                                     "{\"error\":\"invalid dashboard edit command\"}".to_string(),
+                                    &allow_origin_for_thread,
+                                );
+                            }
+                        }
+                    }
+                    (&Method::Post, "/api/commands/dashboard-layout") => {
+                        let mut body = String::new();
+                        let reader = req.as_reader();
+                        if reader.read_to_string(&mut body).is_err() {
+                            respond_json(
+                                req,
+                                400,
+                                "{\"error\":\"invalid request body\"}".to_string(),
+                                &allow_origin_for_thread,
+                            );
+                            continue;
+                        }
+                        let parsed: Result<DashboardLayoutCommand, _> = serde_json::from_str(&body);
+                        match parsed {
+                            Ok(cmd) => {
+                                let has_tools = cmd
+                                    .tools
+                                    .as_ref()
+                                    .map(|t| t.order.is_some() || t.sizes.is_some())
+                                    .unwrap_or(false);
+                                let has_internal = cmd
+                                    .internal
+                                    .as_ref()
+                                    .map(|t| t.order.is_some() || t.sizes.is_some())
+                                    .unwrap_or(false);
+                                if !has_tools && !has_internal {
+                                    respond_json(
+                                        req,
+                                        400,
+                                        "{\"error\":\"tools or internal patch required\"}".to_string(),
+                                        &allow_origin_for_thread,
+                                    );
+                                    continue;
+                                }
+                                if let Ok(mut queue) = dashboard_layout_queue.lock() {
+                                    *queue = Some(cmd);
+                                }
+                                respond_json(
+                                    req,
+                                    200,
+                                    "{\"ok\":true}".to_string(),
+                                    &allow_origin_for_thread,
+                                );
+                            }
+                            Err(_) => {
+                                respond_json(
+                                    req,
+                                    400,
+                                    "{\"error\":\"invalid dashboard layout command\"}".to_string(),
                                     &allow_origin_for_thread,
                                 );
                             }
@@ -344,7 +435,7 @@ impl WebBridgeManager {
         Ok(())
     }
 
-    fn take_open_app_command_internal(&self) -> Result<Option<String>, String> {
+    fn take_open_app_command_internal(&self) -> Result<Option<OpenAppCommand>, String> {
         let mut guard = self
             .pending_open_app
             .lock()
@@ -357,6 +448,16 @@ impl WebBridgeManager {
             .pending_dashboard_edit
             .lock()
             .map_err(|_| "web bridge dashboard-edit queue mutex poisoned".to_string())?;
+        Ok(guard.take())
+    }
+
+    fn take_dashboard_layout_command_internal(
+        &self,
+    ) -> Result<Option<DashboardLayoutCommand>, String> {
+        let mut guard = self
+            .pending_dashboard_layout
+            .lock()
+            .map_err(|_| "web bridge dashboard-layout queue mutex poisoned".to_string())?;
         Ok(guard.take())
     }
 }
@@ -394,7 +495,7 @@ pub fn web_bridge_set_dashboard_state(
 #[tauri::command]
 pub fn web_bridge_take_open_app_command(
     bridge: State<'_, WebBridgeManager>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<OpenAppCommand>, String> {
     bridge.take_open_app_command_internal()
 }
 
@@ -403,4 +504,11 @@ pub fn web_bridge_take_dashboard_edit_command(
     bridge: State<'_, WebBridgeManager>,
 ) -> Result<Option<DashboardEditCommand>, String> {
     bridge.take_dashboard_edit_command_internal()
+}
+
+#[tauri::command]
+pub fn web_bridge_take_dashboard_layout_command(
+    bridge: State<'_, WebBridgeManager>,
+) -> Result<Option<DashboardLayoutCommand>, String> {
+    bridge.take_dashboard_layout_command_internal()
 }

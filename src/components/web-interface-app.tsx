@@ -12,7 +12,13 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { webBridgeStart, webBridgeStatus, webBridgeStop, type WebBridgeStatus } from "@/lib/web-bridge";
+import {
+  webBridgeStart,
+  webBridgeStatus,
+  webBridgeStop,
+  type DashboardLayoutCommand,
+  type WebBridgeStatus,
+} from "@/lib/web-bridge";
 
 const WEB_BRIDGE_CONFIG_KEY = "dropbox-interface:web-bridge-config";
 
@@ -43,6 +49,7 @@ export function WebInterfaceApp() {
   const [bridgeStatus, setBridgeStatus] = useState<WebBridgeStatus | null>(null);
   const [dashboardStatePreview, setDashboardStatePreview] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  const [bridgeOpenFolder, setBridgeOpenFolder] = useState("");
 
   const websocketUrl = useMemo(() => {
     try {
@@ -114,22 +121,49 @@ export function WebInterfaceApp() {
       | "shoots_field"
       | "shoots_studio"
       | "assets",
+    options?: { initialFolder?: string },
   ) {
     if (!config.baseUrl.trim()) return;
     setBusy(true);
     try {
+      const body: Record<string, unknown> = { app };
+      const folder = (options?.initialFolder ?? bridgeOpenFolder).trim();
+      if (folder) {
+        body.initialFolder = folder;
+      }
       const res = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/commands/open-app`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           ...(config.apiKey ? { "x-bridge-key": config.apiKey } : {}),
         },
-        body: JSON.stringify({ app }),
+        body: JSON.stringify(body),
       });
       const payload = await res.text();
       setStatusText(`Open app command (${app}): ${res.status} ${payload}`);
     } catch (e) {
       setStatusText(`Open app command failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function postDashboardLayoutCommand(command: DashboardLayoutCommand) {
+    if (!config.baseUrl.trim()) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/commands/dashboard-layout`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(config.apiKey ? { "x-bridge-key": config.apiKey } : {}),
+        },
+        body: JSON.stringify(command),
+      });
+      const payload = await res.text();
+      setStatusText(`Dashboard layout command: ${res.status} ${payload}`);
+    } catch (e) {
+      setStatusText(`Dashboard layout command failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(false);
     }
@@ -242,6 +276,13 @@ export function WebInterfaceApp() {
             aria-label="Client API key"
             type="password"
           />
+          <Input
+            value={bridgeOpenFolder}
+            onChange={(event) => setBridgeOpenFolder(event.currentTarget.value)}
+            placeholder="Optional folder for open-app (photos / field / studio)"
+            aria-label="Bridge open-app initial folder"
+            className="font-mono text-sm"
+          />
           <div className="flex flex-wrap gap-2">
             <Button type="button" onClick={() => void startBridge()} disabled={busy}>
               <Power data-icon="inline-start" />
@@ -283,6 +324,40 @@ export function WebInterfaceApp() {
             </Button>
             <Button type="button" variant="outline" onClick={() => void postDashboardEditCommand({ layoutLocked: false })} disabled={busy}>
               Unlock layout
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                void postOpenAppCommand("shoots_field", { initialFolder: bridgeOpenFolder })
+              }
+              disabled={busy || !bridgeOpenFolder.trim()}
+            >
+              Open field + folder
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                void postDashboardLayoutCommand({
+                  tools: { order: ["web", "workspace", "dropbox"] },
+                })
+              }
+              disabled={busy}
+            >
+              Demo: reorder tools
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                void postDashboardLayoutCommand({
+                  internal: { sizes: { photos: "wide" } },
+                })
+              }
+              disabled={busy}
+            >
+              Demo: widen Photos tile
             </Button>
           </div>
           {statusText ? (
@@ -334,8 +409,15 @@ export function WebInterfaceApp() {
           </div>
           <Separator />
           <p className="text-xs text-muted-foreground">
-            Live bridge exposes `/health`, `/api/bridge/status`, `/api/dashboard/state`,
-            `/api/commands/open-app`, and `/api/commands/dashboard-edit` with optional `x-bridge-key`.
+            Commands: <span className="font-mono">POST /api/commands/open-app</span> body{" "}
+            <span className="font-mono">{"{ app, initialFolder? }"}</span> (optional folder seeds the
+            internal photo viewer for <span className="font-mono">photos</span>,{" "}
+            <span className="font-mono">shoots_field</span>, <span className="font-mono">shoots_studio</span>
+            ); <span className="font-mono">POST /api/commands/dashboard-edit</span>;{" "}
+            <span className="font-mono">POST /api/commands/dashboard-layout</span> body{" "}
+            <span className="font-mono">{"{ tools?: { order?, sizes? }, internal?: { order?, sizes? } }"}</span>.
+            Optional <span className="font-mono">x-bridge-key</span> on all. Also:{" "}
+            <span className="font-mono">GET /health</span>, <span className="font-mono">/api/dashboard/state</span>.
           </p>
         </CardContent>
       </Card>

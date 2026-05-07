@@ -37,18 +37,22 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { setBridgePhotosSeed } from "@/lib/bridge-photos-seed";
 import {
   webBridgeSetDashboardState,
   webBridgeTakeDashboardEditCommand,
+  webBridgeTakeDashboardLayoutCommand,
   webBridgeTakeOpenAppCommand,
 } from "@/lib/web-bridge";
 import {
+  DEFAULT_INTERNAL_SIZES,
   INTERNAL_APP_ORDER,
   getInternalAppDefinition,
   type InternalAppId,
 } from "@/lib/internal-apps";
 
 const DASHBOARD_LAYOUT_KEY = "dropbox-interface:dashboard-layout-v1";
+const INTERNAL_DASHBOARD_LAYOUT_KEY = "dropbox-interface:internal-dashboard-layout-v1";
 const DASHBOARD_EDIT_LOCK_KEY = "dropbox-interface:dashboard-edit-locked";
 
 type ToolKey = "workspace" | "dropbox" | "web";
@@ -68,6 +72,11 @@ type AppDefinition = {
 type DashboardLayout = {
   order: ToolKey[];
   sizes: Record<ToolKey, CardSize>;
+};
+
+type InternalDashboardLayout = {
+  order: InternalAppId[];
+  sizes: Record<InternalAppId, CardSize>;
 };
 
 const DEFAULT_ORDER: ToolKey[] = ["workspace", "dropbox", "web"];
@@ -137,6 +146,42 @@ function persistLayout(layout: DashboardLayout) {
   localStorage.setItem(DASHBOARD_LAYOUT_KEY, JSON.stringify(layout));
 }
 
+function restoreInternalLayout(): InternalDashboardLayout {
+  const fallback: InternalDashboardLayout = {
+    order: [...INTERNAL_APP_ORDER],
+    sizes: { ...DEFAULT_INTERNAL_SIZES },
+  };
+  const raw = localStorage.getItem(INTERNAL_DASHBOARD_LAYOUT_KEY);
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw) as Partial<InternalDashboardLayout>;
+    const inputOrder = Array.isArray(parsed.order) ? parsed.order : [];
+    const deduped = inputOrder.filter((key, idx) => inputOrder.indexOf(key) === idx);
+    const validOrder = deduped.filter((key): key is InternalAppId =>
+      INTERNAL_APP_ORDER.includes(key as InternalAppId),
+    );
+    const missing = INTERNAL_APP_ORDER.filter((key) => !validOrder.includes(key));
+    const order = [...validOrder, ...missing];
+    const sizes = { ...DEFAULT_INTERNAL_SIZES };
+    if (parsed.sizes && typeof parsed.sizes === "object") {
+      const rawSizes = parsed.sizes as Record<string, unknown>;
+      for (const key of INTERNAL_APP_ORDER) {
+        const value = rawSizes[key];
+        if (value === "compact" || value === "wide" || value === "tall") {
+          sizes[key] = value;
+        }
+      }
+    }
+    return { order, sizes };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistInternalLayout(layout: InternalDashboardLayout) {
+  localStorage.setItem(INTERNAL_DASHBOARD_LAYOUT_KEY, JSON.stringify(layout));
+}
+
 function isActiveSurface(value: string): value is ActiveSurface {
   if (value === "dashboard") {
     return true;
@@ -147,15 +192,83 @@ function isActiveSurface(value: string): value is ActiveSurface {
   return INTERNAL_APP_ORDER.includes(value as InternalAppId);
 }
 
+function applyLayoutPatchToTools(
+  base: DashboardLayout,
+  patch: { order?: string[]; sizes?: Record<string, string> },
+): DashboardLayout {
+  let order = [...base.order];
+  const sizes = { ...base.sizes };
+  if (patch.order !== undefined && patch.order.length > 0) {
+    const deduped = patch.order.filter((key, idx) => patch.order!.indexOf(key) === idx);
+    const validOrder = deduped.filter((key): key is ToolKey =>
+      ALL_TOOL_KEYS.includes(key as ToolKey),
+    );
+    const missing = DEFAULT_ORDER.filter((key) => !validOrder.includes(key));
+    order = [...validOrder, ...missing];
+  }
+  if (patch.sizes !== undefined) {
+    for (const key of ALL_TOOL_KEYS) {
+      const value = patch.sizes[key];
+      if (value === "compact" || value === "wide" || value === "tall") {
+        sizes[key] = value;
+      }
+    }
+  }
+  return { order, sizes };
+}
+
+function applyLayoutPatchToInternal(
+  base: InternalDashboardLayout,
+  patch: { order?: string[]; sizes?: Record<string, string> },
+): InternalDashboardLayout {
+  let order = [...base.order];
+  const sizes = { ...base.sizes };
+  if (patch.order !== undefined && patch.order.length > 0) {
+    const deduped = patch.order.filter((key, idx) => patch.order!.indexOf(key) === idx);
+    const validOrder = deduped.filter((key): key is InternalAppId =>
+      INTERNAL_APP_ORDER.includes(key as InternalAppId),
+    );
+    const missing = INTERNAL_APP_ORDER.filter((key) => !validOrder.includes(key));
+    order = [...validOrder, ...missing];
+  }
+  if (patch.sizes !== undefined) {
+    for (const key of INTERNAL_APP_ORDER) {
+      const value = patch.sizes[key];
+      if (value === "compact" || value === "wide" || value === "tall") {
+        sizes[key] = value;
+      }
+    }
+  }
+  return { order, sizes };
+}
+
+function photosScopeForBridgeOpenApp(app: string): string | null {
+  switch (app) {
+    case "photos":
+      return "internal_photos";
+    case "shoots_field":
+      return "shoots_field";
+    case "shoots_studio":
+      return "shoots_studio";
+    default:
+      return null;
+  }
+}
+
 function App() {
   const [activeApp, setActiveApp] = useState<ActiveSurface>("dashboard");
   const [layout, setLayout] = useState<DashboardLayout>(() => restoreLayout());
+  const [internalLayout, setInternalLayout] = useState<InternalDashboardLayout>(() =>
+    restoreInternalLayout(),
+  );
   const [editMode, setEditMode] = useState(false);
   const [layoutLocked, setLayoutLocked] = useState(
     () => localStorage.getItem(DASHBOARD_EDIT_LOCK_KEY) === "true",
   );
   const [draggingTool, setDraggingTool] = useState<ToolKey | null>(null);
   const [dragOverKey, setDragOverKey] = useState<ToolKey | null>(null);
+  const [draggingInternal, setDraggingInternal] = useState<InternalAppId | null>(null);
+  const [dragOverInternal, setDragOverInternal] = useState<InternalAppId | null>(null);
 
   const title = useMemo(() => {
     if (activeApp === "dashboard") {
@@ -185,24 +298,69 @@ function App() {
     return layout.order.map((key) => byKey.get(key)).filter(Boolean) as AppDefinition[];
   }, [layout.order]);
 
+  const orderedInternalApps = useMemo(() => {
+    return internalLayout.order.map((id) => getInternalAppDefinition(id));
+  }, [internalLayout.order]);
+
   useEffect(() => {
     void webBridgeSetDashboardState({
       activeApp,
       editMode,
       layoutLocked,
       layout,
+      internalLayout,
       orderedApps: orderedApps.map((app) => app.key),
+      orderedInternalApps: internalLayout.order,
       publishedAt: Date.now(),
     }).catch(() => {});
-  }, [activeApp, editMode, layoutLocked, layout, orderedApps]);
+  }, [activeApp, editMode, layoutLocked, layout, internalLayout, orderedApps]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       void webBridgeTakeOpenAppCommand()
         .then((cmd) => {
           if (!cmd) return;
-          if (isActiveSurface(cmd)) {
-            setActiveApp(cmd);
+          const app = cmd.app;
+          if (!isActiveSurface(app)) return;
+          const folder =
+            typeof cmd.initialFolder === "string" ? cmd.initialFolder.trim() : "";
+          if (folder) {
+            const scope = photosScopeForBridgeOpenApp(app);
+            if (scope) {
+              setBridgePhotosSeed(scope, folder);
+            }
+          }
+          setActiveApp(app);
+        })
+        .catch(() => {});
+
+      void webBridgeTakeDashboardLayoutCommand()
+        .then((layoutCmd) => {
+          if (!layoutCmd) return;
+          const { tools, internal } = layoutCmd;
+          const toolsHasOrder = tools?.order != null && tools.order.length > 0;
+          const toolsHasSizes = tools?.sizes != null;
+          if (tools && (toolsHasOrder || toolsHasSizes)) {
+            setLayout((prev) => {
+              const next = applyLayoutPatchToTools(prev, {
+                order: toolsHasOrder ? tools.order : undefined,
+                sizes: toolsHasSizes ? tools.sizes : undefined,
+              });
+              persistLayout(next);
+              return next;
+            });
+          }
+          const internalHasOrder = internal?.order != null && internal.order.length > 0;
+          const internalHasSizes = internal?.sizes != null;
+          if (internal && (internalHasOrder || internalHasSizes)) {
+            setInternalLayout((prev) => {
+              const next = applyLayoutPatchToInternal(prev, {
+                order: internalHasOrder ? internal.order : undefined,
+                sizes: internalHasSizes ? internal.sizes : undefined,
+              });
+              persistInternalLayout(next);
+              return next;
+            });
           }
         })
         .catch(() => {});
@@ -228,6 +386,28 @@ function App() {
     return () => window.clearInterval(timer);
   }, []);
 
+  function moveInternalCard(fromKey: InternalAppId, toKey: InternalAppId) {
+    if (fromKey === toKey) return;
+    const next = [...internalLayout.order];
+    const fromIdx = next.indexOf(fromKey);
+    const toIdx = next.indexOf(toKey);
+    if (fromIdx < 0 || toIdx < 0) return;
+    next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, fromKey);
+    const updated = { ...internalLayout, order: next };
+    setInternalLayout(updated);
+    persistInternalLayout(updated);
+  }
+
+  function updateInternalCardSize(key: InternalAppId, size: CardSize) {
+    const updated = {
+      ...internalLayout,
+      sizes: { ...internalLayout.sizes, [key]: size },
+    };
+    setInternalLayout(updated);
+    persistInternalLayout(updated);
+  }
+
   function moveCard(fromKey: ToolKey, toKey: ToolKey) {
     if (fromKey === toKey) return;
     const next = [...layout.order];
@@ -251,11 +431,15 @@ function App() {
   }
 
   function resetLayout() {
-    const next = restoreLayout();
-    next.order = [...DEFAULT_ORDER];
-    next.sizes = { ...DEFAULT_SIZES };
-    setLayout(next);
-    persistLayout(next);
+    const nextTools = { order: [...DEFAULT_ORDER], sizes: { ...DEFAULT_SIZES } };
+    setLayout(nextTools);
+    persistLayout(nextTools);
+    const nextInternal = {
+      order: [...INTERNAL_APP_ORDER],
+      sizes: { ...DEFAULT_INTERNAL_SIZES },
+    };
+    setInternalLayout(nextInternal);
+    persistInternalLayout(nextInternal);
   }
 
   function toggleLayoutLock() {
@@ -271,9 +455,18 @@ function App() {
     return "";
   }
 
+  function cardSpanClassInternal(key: InternalAppId) {
+    const size = internalLayout.sizes[key];
+    if (size === "wide") return "md:col-span-2";
+    if (size === "tall") return "md:row-span-2";
+    return "";
+  }
+
   function endDragSession() {
     setDraggingTool(null);
     setDragOverKey(null);
+    setDraggingInternal(null);
+    setDragOverInternal(null);
   }
 
   return (
@@ -402,7 +595,7 @@ function App() {
           {activeApp === "dashboard" ? (
             <div className="flex w-full flex-wrap items-center justify-end gap-2 border-t border-border/60 pt-3">
               <span className="text-xs font-medium text-muted-foreground">Internal apps</span>
-              {INTERNAL_APP_ORDER.map((id) => {
+              {internalLayout.order.map((id) => {
                 const def = getInternalAppDefinition(id);
                 return (
                   <Button
@@ -431,13 +624,14 @@ function App() {
                 {layoutLocked ? (
                   <>
                     <span className="font-medium text-foreground">Layout is locked.</span> Unlock to drag
-                    tool tiles by the grip handle.
+                    tiles by the grip handle on both sections.
                   </>
                 ) : (
                   <>
-                    <span className="font-medium text-foreground">Drag the grip</span> on each{" "}
-                    <span className="font-medium text-foreground">Tools</span> tile to reorder. Internal
-                    applications stay fixed until we add layout controls for them.
+                    <span className="font-medium text-foreground">Drag the grip</span> on{" "}
+                    <span className="font-medium text-foreground">Internal applications</span> or{" "}
+                    <span className="font-medium text-foreground">Tools</span> tiles to reorder. Use the size
+                    picker in edit mode where available.
                   </>
                 )}
               </p>
@@ -447,41 +641,134 @@ function App() {
             <div className="space-y-1">
               <h2 className="text-sm font-semibold text-foreground">Internal applications</h2>
               <p className="text-xs text-muted-foreground">
-                Workflow starting points. The photo viewer is a shared internal module embedded where you
-                need previews—not a separate generic app tile.
+                Workflow starting points. Reorder and resize tiles below in edit mode — same rules as Tools.
               </p>
             </div>
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {INTERNAL_APP_ORDER.map((id) => {
-                const def = getInternalAppDefinition(id);
+            <div className="grid w-full gap-4 md:auto-rows-[minmax(180px,auto)] md:grid-cols-2 xl:grid-cols-3">
+              {orderedInternalApps.map((def) => {
+                const id = def.id;
                 const Icon = def.icon;
+                const isDragging = draggingInternal === id;
+                const isDropTarget = Boolean(
+                  draggingInternal && dragOverInternal === id && draggingInternal !== id,
+                );
+                const canDrag = editMode && !layoutLocked;
                 return (
                   <Card
                     key={id}
-                    className="flex flex-col border-primary/15 shadow-sm ring-1 ring-primary/10"
+                    onDragOver={(e) => {
+                      if (!draggingInternal || !canDrag) return;
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      setDragOverInternal(id);
+                    }}
+                    onDragLeave={(e) => {
+                      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                        setDragOverInternal((prev) => (prev === id ? null : prev));
+                      }
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (draggingInternal && canDrag) {
+                        moveInternalCard(draggingInternal, id);
+                      }
+                      endDragSession();
+                    }}
+                    className={`${cardSpanClassInternal(id)} flex flex-col border-primary/15 shadow-sm ring-1 ring-primary/10 transition-[box-shadow,transform,opacity] duration-200 hover:-translate-y-0.5 hover:shadow-md hover:ring-primary/20 ${
+                      isDragging ? "scale-[0.99] opacity-60 ring-2 ring-primary/50" : ""
+                    } ${
+                      isDropTarget ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : ""
+                    }`}
                   >
                     <CardHeader className="gap-2">
-                      <CardTitle className="flex items-start gap-3 text-base">
-                        <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                          <Icon className="size-5" aria-hidden />
+                      <CardTitle className="flex items-start justify-between gap-2 text-base">
+                        <span className="flex min-w-0 items-start gap-3">
+                          <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                            <Icon className="size-5" aria-hidden />
+                          </span>
+                          <span className="leading-snug">{def.title}</span>
                         </span>
-                        <span className="leading-snug">{def.title}</span>
+                        <span
+                          role="button"
+                          tabIndex={canDrag ? 0 : -1}
+                          draggable={canDrag}
+                          aria-label={
+                            canDrag
+                              ? `Drag to reorder ${def.title}`
+                              : "Enable edit layout and unlock to reorder"
+                          }
+                          title={canDrag ? "Drag to reorder" : editMode ? "Unlock layout to reorder" : "Edit layout to reorder"}
+                          className={`text-muted-foreground -mr-1 -mt-0.5 inline-flex shrink-0 rounded-md p-1.5 touch-none select-none ${
+                            canDrag
+                              ? "cursor-grab active:cursor-grabbing hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                              : "cursor-not-allowed opacity-40"
+                          }`}
+                          onKeyDown={(e) => {
+                            if (!canDrag) return;
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                            }
+                          }}
+                          onDragStart={(e) => {
+                            if (!canDrag) {
+                              e.preventDefault();
+                              return;
+                            }
+                            e.dataTransfer.effectAllowed = "move";
+                            e.dataTransfer.setData("text/plain", id);
+                            setDraggingTool(null);
+                            setDragOverKey(null);
+                            setDraggingInternal(id);
+                          }}
+                          onDragEnd={endDragSession}
+                        >
+                          <GripVertical className="size-5" aria-hidden />
+                        </span>
                       </CardTitle>
                       <CardDescription>{def.description}</CardDescription>
                     </CardHeader>
                     <CardContent className="mt-auto flex flex-col gap-3">
                       <p className="text-xs text-muted-foreground">{def.subtitle}</p>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button
-                          type="button"
-                          className="shadow-sm"
-                          onClick={() => setActiveApp(id)}
-                        >
-                          {def.openLabel}
-                        </Button>
-                        <span className="rounded-md border border-dashed border-muted-foreground/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground">
-                          Internal
-                        </span>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            className="shadow-sm"
+                            onClick={() => setActiveApp(id)}
+                          >
+                            {def.openLabel}
+                          </Button>
+                          <span className="rounded-md border border-dashed border-muted-foreground/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground">
+                            Internal
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                          {editMode ? (
+                            <Select
+                              value={internalLayout.sizes[id]}
+                              onValueChange={(value) => updateInternalCardSize(id, value as CardSize)}
+                            >
+                              <SelectTrigger className="w-full sm:w-36">
+                                <SelectValue placeholder="Tile size" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectGroup>
+                                  <SelectLabel>Tile size</SelectLabel>
+                                  <SelectItem value="compact">Compact</SelectItem>
+                                  <SelectItem value="wide">Wide</SelectItem>
+                                  <SelectItem value="tall">Tall</SelectItem>
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                          ) : null}
+                          <p className="text-xs text-muted-foreground">
+                            {canDrag
+                              ? "Drag grip to reorder"
+                              : layoutLocked && editMode
+                                ? "Unlock to reorder"
+                                : "Edit layout to rearrange"}
+                          </p>
+                        </div>
                       </div>
                     </CardContent>
                   </Card>
@@ -560,6 +847,8 @@ function App() {
                         }
                         e.dataTransfer.effectAllowed = "move";
                         e.dataTransfer.setData("text/plain", app.key);
+                        setDraggingInternal(null);
+                        setDragOverInternal(null);
                         setDraggingTool(app.key);
                       }}
                       onDragEnd={endDragSession}

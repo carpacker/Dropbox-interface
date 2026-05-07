@@ -26,6 +26,7 @@ import {
   readImageDataUrl,
   type FsEntry,
 } from "@/lib/tauri-fs";
+import { BRIDGE_PHOTOS_SEED_PREFIX } from "@/lib/bridge-photos-seed";
 
 const IMAGE_EXTENSIONS = [
   ".jpg",
@@ -102,6 +103,13 @@ export function PhotosApp({ variant = "page", persistenceKey }: PhotosAppProps) 
       try {
         let start = "";
         if (scope) {
+          const seedKey = `${BRIDGE_PHOTOS_SEED_PREFIX}${scope}`;
+          const seeded = sessionStorage.getItem(seedKey);
+          if (seeded?.trim()) {
+            sessionStorage.removeItem(seedKey);
+            await loadPath(seeded.trim());
+            return;
+          }
           const stored = localStorage.getItem(`dropbox-interface:photos-last-path:${scope}`);
           if (stored?.trim()) {
             start = stored.trim();
