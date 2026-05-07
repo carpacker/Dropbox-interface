@@ -1,65 +1,99 @@
-import { lazy, Suspense, useState } from "react";
+import { ArrowLeft, FolderOpen, MonitorCog } from "lucide-react";
+import { useMemo, useState } from "react";
 
-import { FileBrowser } from "@/components/file-browser";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
-
-const DesktopTerminal = lazy(() =>
-  import("@/components/desktop-terminal").then((m) => ({
-    default: m.DesktopTerminal,
-  })),
-);
+import { DesktopWorkspaceApp } from "@/components/desktop-workspace-app";
+import { PhotosApp } from "@/components/photos-app";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 
 function App() {
-  const [tab, setTab] = useState("files");
-  const [terminalEverOpened, setTerminalEverOpened] = useState(false);
+  const [activeApp, setActiveApp] = useState<"dashboard" | "workspace" | "photos">(
+    "dashboard",
+  );
 
-  function handleTabChange(value: string) {
-    setTab(value);
-    if (value === "terminal") {
-      setTerminalEverOpened(true);
+  const title = useMemo(() => {
+    switch (activeApp) {
+      case "workspace":
+        return "Desktop Workspace";
+      case "photos":
+        return "Photos";
+      default:
+        return "Dashboard";
     }
-  }
+  }, [activeApp]);
 
   return (
     <div className="flex min-h-screen flex-col gap-6 bg-background p-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold tracking-tight">
-          Dropbox Interface
-        </h1>
+        <h1 className="text-xl font-semibold tracking-tight">Dropbox Interface</h1>
         <p className="text-sm text-muted-foreground">
-          Desktop shell · React · TypeScript · shadcn/ui · Tauri
+          Dashboard shell · React · TypeScript · shadcn/ui · Tauri
         </p>
       </header>
 
-      <Tabs value={tab} onValueChange={handleTabChange} className="flex flex-col gap-4">
-        <TabsList>
-          <TabsTrigger value="files">Files</TabsTrigger>
-          <TabsTrigger value="terminal">Terminal</TabsTrigger>
-        </TabsList>
-        <TabsContent value="files" className="flex flex-col gap-4">
-          <FileBrowser />
-        </TabsContent>
-        {terminalEverOpened ? (
-          <TabsContent
-            value="terminal"
-            forceMount
-            className={cn(
-              "flex flex-col gap-4 data-[state=inactive]:hidden",
-            )}
-          >
-            <Suspense
-              fallback={
-                <p className="text-sm text-muted-foreground">
-                  Loading terminal…
-                </p>
-              }
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {activeApp !== "dashboard" ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setActiveApp("dashboard")}
             >
-              <DesktopTerminal active={tab === "terminal"} />
-            </Suspense>
-          </TabsContent>
-        ) : null}
-      </Tabs>
+              <ArrowLeft data-icon="inline-start" />
+              Back to dashboard
+            </Button>
+          ) : null}
+          <p className="text-sm font-medium">{title}</p>
+        </div>
+      </div>
+
+      {activeApp === "dashboard" ? (
+        <div className="grid gap-4 md:grid-cols-2">
+          <Card className="flex flex-col">
+            <CardHeader className="flex flex-col gap-2">
+              <CardTitle className="flex items-center gap-2">
+                <MonitorCog />
+                Desktop Workspace
+              </CardTitle>
+              <CardDescription>
+                Open the desktop shell and browse folders inside a single app.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button type="button" onClick={() => setActiveApp("workspace")}>
+                Launch workspace app
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card className="flex flex-col">
+            <CardHeader className="flex flex-col gap-2">
+              <CardTitle className="flex items-center gap-2">
+                <FolderOpen />
+                Photo Viewer
+              </CardTitle>
+              <CardDescription>
+                Browse directories and preview supported image files quickly.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button type="button" onClick={() => setActiveApp("photos")}>
+                Open photo app
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
+
+      {activeApp === "workspace" ? <DesktopWorkspaceApp /> : null}
+      {activeApp === "photos" ? <PhotosApp /> : null}
     </div>
   );
 }

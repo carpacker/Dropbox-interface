@@ -17,3 +17,7 @@ export function parentDirectory(path: string) {
 export function listDirectory(path: string) {
   return invoke<FsEntry[]>("list_directory", { path });
 }
+
+export function readImageDataUrl(path: string) {
+  return invoke<string>("read_image_data_url", { path });
+}

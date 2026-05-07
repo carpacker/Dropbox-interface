@@ -1,5 +1,6 @@
 mod terminal;
 
+use base64::Engine;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -66,6 +67,31 @@ fn list_directory(path: String) -> Result<Vec<FsEntry>, String> {
     Ok(entries)
 }
 
+fn image_mime(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+fn read_image_data_url(path: String) -> Result<String, String> {
+    let source = PathBuf::from(path.trim());
+    if !source.is_file() {
+        return Err("Not a file path".into());
+    }
+
+    let mime = image_mime(&source).ok_or_else(|| "Unsupported image format".to_string())?;
+    let bytes = std::fs::read(&source).map_err(|e| e.to_string())?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{};base64,{}", mime, encoded))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -75,6 +101,7 @@ pub fn run() {
             default_local_root,
             parent_directory,
             list_directory,
+            read_image_data_url,
             terminal::terminal_spawn,
             terminal::terminal_write,
             terminal::terminal_resize,
