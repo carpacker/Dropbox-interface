@@ -46,6 +46,8 @@ const SLIDESHOW_MS = 2200;
 
 export type PhotosAppProps = {
   variant?: "page" | "embedded";
+  /** When set, last browsed folder path is remembered per scope (e.g. per internal workflow). */
+  persistenceKey?: string;
 };
 
 function isImageFile(path: string) {
@@ -53,8 +55,9 @@ function isImageFile(path: string) {
   return IMAGE_EXTENSIONS.some((ext) => lowered.endsWith(ext));
 }
 
-export function PhotosApp({ variant = "page" }: PhotosAppProps) {
+export function PhotosApp({ variant = "page", persistenceKey }: PhotosAppProps) {
   const embedded = variant === "embedded";
+  const scope = persistenceKey?.trim() ?? "";
   const [currentPath, setCurrentPath] = useState("");
   const [pathInput, setPathInput] = useState("");
   const [entries, setEntries] = useState<FsEntry[]>([]);
@@ -84,23 +87,35 @@ export function PhotosApp({ variant = "page" }: PhotosAppProps) {
       setEntries(rows);
       setCurrentPath(nextPath);
       setPathInput(nextPath);
+      if (scope) {
+        localStorage.setItem(`dropbox-interface:photos-last-path:${scope}`, nextPath);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [scope]);
 
   useEffect(() => {
     void (async () => {
       try {
-        const root = await defaultLocalRoot();
-        await loadPath(root);
+        let start = "";
+        if (scope) {
+          const stored = localStorage.getItem(`dropbox-interface:photos-last-path:${scope}`);
+          if (stored?.trim()) {
+            start = stored.trim();
+          }
+        }
+        if (!start) {
+          start = await defaultLocalRoot();
+        }
+        await loadPath(start);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
-  }, [loadPath]);
+  }, [loadPath, scope]);
 
   const imageEntries = useMemo(
     () => entries.filter((entry) => !entry.isDirectory && isImageFile(entry.path)),

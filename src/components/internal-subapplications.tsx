@@ -95,7 +95,7 @@ export function ShootsFieldSubapplication() {
           <CardDescription>Inline viewer for field captures.</CardDescription>
         </CardHeader>
         <CardContent>
-          <PhotosApp variant="embedded" />
+          <PhotosApp variant="embedded" persistenceKey="shoots_field" />
         </CardContent>
       </Card>
     </InternalAppShell>
@@ -121,7 +121,7 @@ export function ShootsStudioSubapplication() {
           <CardDescription>Studio captures render here by default.</CardDescription>
         </CardHeader>
         <CardContent>
-          <PhotosApp variant="embedded" />
+          <PhotosApp variant="embedded" persistenceKey="shoots_studio" />
         </CardContent>
       </Card>
     </InternalAppShell>
@@ -132,7 +132,7 @@ export function PhotosSubapplication() {
   const { shellProps } = buildShell("photos");
   return (
     <InternalAppShell {...shellProps} footer={<p className="text-sm text-muted-foreground">This module is shared with the other internal applications. Prefer navigating through a workflow surface and embedding the viewer where possible.</p>}>
-      <PhotosApp variant="embedded" />
+      <PhotosApp variant="embedded" persistenceKey="internal_photos" />
     </InternalAppShell>
   );
 }

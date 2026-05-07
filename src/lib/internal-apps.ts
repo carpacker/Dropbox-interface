@@ -31,6 +31,16 @@ export const INTERNAL_APP_ORDER: InternalAppId[] = [
   "assets",
 ];
 
+export type InternalTileSize = "compact" | "wide" | "tall";
+
+export const DEFAULT_INTERNAL_SIZES: Record<InternalAppId, InternalTileSize> = {
+  social_media: "compact",
+  shoots_field: "wide",
+  shoots_studio: "wide",
+  photos: "compact",
+  assets: "compact",
+};
+
 export const INTERNAL_APP_DEFINITIONS: InternalAppDefinition[] = [
   {
     id: "social_media",
