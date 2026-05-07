@@ -53,6 +53,13 @@ type SyncSummary = {
   totalChanges: number;
   fileChanges: number;
   folderChanges: number;
+  deletedChanges: number;
+};
+
+type SyncChangeItem = {
+  tag: DropboxEntry[".tag"];
+  name: string;
+  path: string;
 };
 
 function randomString(bytes = 32) {
@@ -142,6 +149,7 @@ export function DropboxBrowserApp() {
   const [selectedLink, setSelectedLink] = useState<string | null>(null);
   const [isSlideshowPlaying, setIsSlideshowPlaying] = useState(false);
   const [syncSummary, setSyncSummary] = useState<SyncSummary | null>(null);
+  const [syncChanges, setSyncChanges] = useState<SyncChangeItem[]>([]);
   const [syncCheckpoints, setSyncCheckpoints] = useState<Record<string, string>>(() => {
     const raw = localStorage.getItem(SYNC_CHECKPOINTS_KEY);
     if (!raw) return {};
@@ -358,6 +366,7 @@ export function DropboxBrowserApp() {
     setSelectedLink(null);
     setIsSlideshowPlaying(false);
     setSyncSummary(null);
+    setSyncChanges([]);
     setError(null);
   }
 
@@ -432,7 +441,15 @@ export function DropboxBrowserApp() {
         totalChanges: aggregate.length,
         fileChanges: aggregate.filter((entry) => entry[".tag"] === "file").length,
         folderChanges: aggregate.filter((entry) => entry[".tag"] === "folder").length,
+        deletedChanges: aggregate.filter((entry) => entry[".tag"] === "deleted").length,
       });
+      setSyncChanges(
+        aggregate.slice(0, 120).map((entry) => ({
+          tag: entry[".tag"],
+          name: entry.name,
+          path: entry.path_display ?? entry.path_lower ?? entry.name,
+        })),
+      );
       saveCheckpointCursor(pendingCursor);
       await loadPath(path);
     } catch (e) {
@@ -610,11 +627,29 @@ export function DropboxBrowserApp() {
           </p>
         </div>
         {syncSummary ? (
-          <p className="text-xs text-muted-foreground">
-            Last sync: {new Date(syncSummary.checkedAt).toLocaleTimeString()} ·{" "}
-            {syncSummary.totalChanges} changes ({syncSummary.fileChanges} files,{" "}
-            {syncSummary.folderChanges} folders)
-          </p>
+          <div className="rounded-lg border p-2">
+            <p className="text-xs text-muted-foreground">
+              Last sync: {new Date(syncSummary.checkedAt).toLocaleTimeString()} ·{" "}
+              {syncSummary.totalChanges} changes ({syncSummary.fileChanges} files,{" "}
+              {syncSummary.folderChanges} folders, {syncSummary.deletedChanges} deleted)
+            </p>
+            {syncChanges.length > 0 ? (
+              <ScrollArea className="mt-2 h-28 rounded border">
+                <div className="flex flex-col gap-1 p-2">
+                  {syncChanges.map((item, idx) => (
+                    <p
+                      key={`${item.path}-${idx}`}
+                      className="truncate text-xs text-muted-foreground"
+                    >
+                      [{item.tag}] {item.path}
+                    </p>
+                  ))}
+                </div>
+              </ScrollArea>
+            ) : (
+              <p className="mt-2 text-xs text-muted-foreground">No changes since checkpoint.</p>
+            )}
+          </div>
         ) : null}
 
         {error ? (
