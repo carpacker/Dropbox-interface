@@ -1,7 +1,8 @@
-import { ArrowLeft, FolderOpen, MonitorCog } from "lucide-react";
+import { ArrowLeft, FolderOpen, Link2, MonitorCog } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { DesktopWorkspaceApp } from "@/components/desktop-workspace-app";
+import { DropboxBrowserApp } from "@/components/dropbox-browser-app";
 import { PhotosApp } from "@/components/photos-app";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,7 +14,9 @@ import {
 } from "@/components/ui/card";
 
 function App() {
-  const [activeApp, setActiveApp] = useState<"dashboard" | "workspace" | "photos">(
+  const [activeApp, setActiveApp] = useState<
+    "dashboard" | "workspace" | "photos" | "dropbox"
+  >(
     "dashboard",
   );
 
@@ -23,6 +26,8 @@ function App() {
         return "Desktop Workspace";
       case "photos":
         return "Photos";
+      case "dropbox":
+        return "Dropbox Explorer";
       default:
         return "Dashboard";
     }
@@ -55,7 +60,7 @@ function App() {
       </div>
 
       {activeApp === "dashboard" ? (
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <Card className="flex flex-col">
             <CardHeader className="flex flex-col gap-2">
               <CardTitle className="flex items-center gap-2">
@@ -89,11 +94,29 @@ function App() {
               </Button>
             </CardContent>
           </Card>
+
+          <Card className="flex flex-col">
+            <CardHeader className="flex flex-col gap-2">
+              <CardTitle className="flex items-center gap-2">
+                <Link2 />
+                Dropbox Explorer
+              </CardTitle>
+              <CardDescription>
+                Connect with Dropbox token and browse cloud files/folders.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button type="button" onClick={() => setActiveApp("dropbox")}>
+                Open Dropbox app
+              </Button>
+            </CardContent>
+          </Card>
         </div>
       ) : null}
 
       {activeApp === "workspace" ? <DesktopWorkspaceApp /> : null}
       {activeApp === "photos" ? <PhotosApp /> : null}
+      {activeApp === "dropbox" ? <DropboxBrowserApp /> : null}
     </div>
   );
 }
