@@ -1,0 +1,47 @@
+# Gitleaks configuration for dropbox-interface.
+#
+# We pull in the upstream "gitleaks:default" ruleset (covers AWS keys,
+# generic API keys, private SSH keys, JWTs, etc.) and then tack on
+# project-specific patterns and allowlists.
+#
+# Run locally with `gitleaks detect --config .gitleaks.toml --source .`.
+
+title = "dropbox-interface gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "dropbox-bearer-token"
+description = "Dropbox-issued bearer access tokens (sl.* prefix)"
+# Dropbox short-lived access tokens start with `sl.` followed by a long
+# base64url string. This intentionally does NOT match the App key (which is
+# public / part of the bundle).
+regex = '''sl\.[A-Za-z0-9_\-]{60,}'''
+keywords = ["sl."]
+
+[[rules]]
+id = "dropbox-refresh-token"
+description = "Dropbox refresh tokens"
+regex = '''(?i)refresh[_-]?token["'\s:=]{1,5}[A-Za-z0-9_\-]{40,}'''
+keywords = ["refresh_token", "refresh-token"]
+
+[allowlist]
+description = "Project-wide allowlist"
+paths = [
+  '''(.*?)package-lock\.json$''',
+  '''(.*?)Cargo\.lock$''',
+  '''(.*?)\.min\.js$''',
+  # Test fixtures and mocks intentionally embed fake-looking tokens.
+  '''src/test/.*''',
+  '''src-tauri/src/dropbox/.*\.rs$''',
+  '''.*\.test\.tsx?$''',
+  '''.*\.test\.ts$''',
+]
+regexes = [
+  # Test placeholder strings that look secret-ish but aren't.
+  '''TOTALLY_SECRET_(ACCESS|REFRESH)''',
+  '''test-key''',
+  '''access-1''',
+  '''refresh-1''',
+]

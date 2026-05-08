@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (typecheck + test + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  rust:
+    name: Rust (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsecret-1-dev \
+            libdbus-1-dev \
+            pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --locked
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+  audit:
+    name: Security audit (cargo-audit + npm audit + gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs the full history to scan past commits.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: npm audit (high+)
+        # `npm audit` exit code is the count of vulns; treat anything high+
+        # as a failure.
+        run: npm audit --audit-level=high --omit=dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: audit
+      - name: Install cargo-audit
+        # ^0.22 understands CVSS 4.0 entries in the rustsec advisory db.
+        run: cargo install cargo-audit --locked --version ^0.22
+      - name: cargo audit
+        working-directory: src-tauri
+        # Default behavior: fails on `vulnerability` advisories; surfaces
+        # `unmaintained` etc. as warnings without failing the build. We let
+        # those through because they're driven by Tauri's transitive GTK3
+        # bindings, which the upstream tracks; we revisit when Tauri moves
+        # to GTK4. See THREAT_MODEL.md §"Residual risks".
+        run: cargo audit
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          config: .gitleaks.toml
