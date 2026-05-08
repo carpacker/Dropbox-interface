@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -338,11 +338,36 @@ describe("PipelineView — Promote action", () => {
     expect(btn).toHaveTextContent("Ready");
   });
 
-  it("does not render Promote on Inbox items", async () => {
+  it("renders Promote on Inbox items pointing at the first state", () => {
     setupTwoStateFixture();
     renderWith({
       parentEntries: [
         dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+        dropboxFile("loose.txt", "/parent/loose.txt"),
+      ],
+      renderEntryRow: (entry, opts) => (
+        <div data-testid={`row-${entry.path}`}>
+          <span>{entry.name}</span>
+          {opts.promote ? (
+            <span data-testid={`promote-target-${entry.path}`}>
+              {opts.promote.targetStateName}
+            </span>
+          ) : null}
+        </div>
+      ),
+    });
+    // Inbox is selected by default; loose.txt is an inbox item.
+    const target = screen.getByTestId("promote-target-/parent/loose.txt");
+    expect(target).toHaveTextContent("Processing");
+  });
+
+  it("does not render Promote on Inbox items when the first state folder is missing", () => {
+    // Only Ready exists; first state Processing is missing → no promote
+    // target for the inbox.
+    setupTwoStateFixture();
+    renderWith({
+      parentEntries: [
         dropboxFolder("2__ready"),
         dropboxFile("loose.txt", "/parent/loose.txt"),
       ],
@@ -356,6 +381,72 @@ describe("PipelineView — Promote action", () => {
     expect(
       screen.queryByTestId("has-promote-/parent/loose.txt"),
     ).not.toBeInTheDocument();
+  });
+
+  it("clicking Promote from Inbox moves the item to the first state and refreshes", async () => {
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    const stateListings: Record<string, { count: number }> = {
+      "/parent/1__Processing": { count: 0 },
+    };
+    setInvokeHandler("dropbox_list_folder", (args) => {
+      const path = (args as { path: string }).path;
+      const listing = stateListings[path];
+      if (!listing) return [];
+      // Each subsequent call returns one extra (post-move) entry.
+      return Array.from({ length: listing.count }, (_, i) => ({
+        kind: "file" as const,
+        name: `n${i}.txt`,
+        path: `${path}/n${i}.txt`,
+        displayPath: `${path}/n${i}.txt`,
+        size: 1,
+        serverModified: null,
+      }));
+    });
+    const moveSpy = vi.fn((args: unknown) => {
+      const a = args as { fromPath: string; toPath: string };
+      expect(a.fromPath).toBe("/parent/loose.txt");
+      expect(a.toPath).toBe("/parent/1__Processing/loose.txt");
+      stateListings["/parent/1__Processing"].count = 1;
+      return {
+        kind: "file",
+        name: "loose.txt",
+        path: a.toPath,
+        displayPath: a.toPath,
+        size: 1,
+        serverModified: null,
+      };
+    });
+    setInvokeHandler("dropbox_move_v2", moveSpy);
+    const onParentRefresh = vi.fn();
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+        dropboxFile("loose.txt", "/parent/loose.txt"),
+      ],
+      onParentRefresh,
+      renderEntryRow: (entry, opts) => (
+        <button
+          type="button"
+          data-testid={`promote-${entry.path}`}
+          disabled={!opts.promote}
+          onClick={() => opts.promote?.onClick()}
+        >
+          {opts.promote?.targetStateName ?? entry.name}
+        </button>
+      ),
+    });
+
+    await user.click(screen.getByTestId("promote-/parent/loose.txt"));
+    await waitFor(() => expect(moveSpy).toHaveBeenCalledTimes(1));
+    // Inbox source → parent listing must refresh (where the loose item
+    // disappeared from). Destination state listing also refreshes.
+    expect(onParentRefresh).toHaveBeenCalled();
+    expect(
+      await screen.findByLabelText(/move completed/i),
+    ).toHaveTextContent(/Processing/);
   });
 
   it("does not render Promote on the terminal state", async () => {
@@ -579,6 +670,188 @@ describe("PipelineView — Promote action", () => {
     expect(
       screen.queryByLabelText(/move completed/i),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("PipelineView — drag-and-drop between buckets", () => {
+  /**
+   * jsdom's DataTransfer is shallow; helper builds a stub that supports
+   * the methods the component calls.
+   */
+  function fakeDataTransfer() {
+    const data = new Map<string, string>();
+    return {
+      data,
+      effectAllowed: "none",
+      dropEffect: "none",
+      setData(format: string, value: string) {
+        data.set(format, value);
+      },
+      getData(format: string) {
+        return data.get(format) ?? "";
+      },
+    };
+  }
+
+  function dragEntryToBucket(entryPath: string, bucketName: RegExp) {
+    const dt = fakeDataTransfer();
+    const row = screen.getByTestId(`row-${entryPath}`).closest("li");
+    if (!row) throw new Error(`row for ${entryPath} not in document`);
+    fireEvent.dragStart(row, { dataTransfer: dt });
+    const target = screen.getByRole("tab", { name: bucketName });
+    fireEvent.dragOver(target, { dataTransfer: dt });
+    fireEvent.drop(target, { dataTransfer: dt });
+    fireEvent.dragEnd(row, { dataTransfer: dt });
+  }
+
+  function setupTwoStateForDrag() {
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    setInvokeHandler("dropbox_list_folder", () => []);
+  }
+
+  const renderRowWithTestid: React.ComponentProps<
+    typeof PipelineView
+  >["renderEntryRow"] = (entry, _opts) => (
+    <div data-testid={`row-${entry.path}`}>{entry.name}</div>
+  );
+
+  it("drag from Inbox row to a state chip fires move and refreshes parent", async () => {
+    setupTwoStateForDrag();
+    const moveSpy = vi.fn(() => ({
+      kind: "file",
+      name: "x.txt",
+      path: "/parent/2__ready/x.txt",
+      displayPath: "/parent/2__ready/x.txt",
+      size: 1,
+      serverModified: null,
+    }));
+    setInvokeHandler("dropbox_move_v2", moveSpy);
+    const onParentRefresh = vi.fn();
+
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+        dropboxFile("x.txt", "/parent/x.txt"),
+      ],
+      onParentRefresh,
+      renderEntryRow: renderRowWithTestid,
+    });
+
+    dragEntryToBucket("/parent/x.txt", /^Ready/i);
+
+    await waitFor(() => expect(moveSpy).toHaveBeenCalledTimes(1));
+    expect(moveSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromPath: "/parent/x.txt",
+        toPath: "/parent/2__ready/x.txt",
+      }),
+    );
+    expect(onParentRefresh).toHaveBeenCalled();
+  });
+
+  it("drag from a state row onto Inbox un-files the item to the parent root", async () => {
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    setInvokeHandler("dropbox_list_folder", (args) => {
+      if ((args as { path: string }).path === "/parent/1__Processing") {
+        return [dropboxFile("x.txt", "/parent/1__Processing/x.txt")];
+      }
+      return [];
+    });
+    const moveSpy = vi.fn(() => ({
+      kind: "file",
+      name: "x.txt",
+      path: "/parent/x.txt",
+      displayPath: "/parent/x.txt",
+      size: 1,
+      serverModified: null,
+    }));
+    setInvokeHandler("dropbox_move_v2", moveSpy);
+    const onParentRefresh = vi.fn();
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+      ],
+      onParentRefresh,
+      renderEntryRow: renderRowWithTestid,
+    });
+
+    // Switch to Processing so the row is rendered.
+    await user.click(screen.getByRole("tab", { name: /processing/i }));
+    await screen.findByTestId("row-/parent/1__Processing/x.txt");
+
+    dragEntryToBucket("/parent/1__Processing/x.txt", /^Inbox/i);
+
+    await waitFor(() => expect(moveSpy).toHaveBeenCalledTimes(1));
+    expect(moveSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromPath: "/parent/1__Processing/x.txt",
+        toPath: "/parent/x.txt",
+      }),
+    );
+    expect(onParentRefresh).toHaveBeenCalled();
+  });
+
+  it("drag onto the same bucket is a no-op (no move call)", async () => {
+    setupTwoStateForDrag();
+    const moveSpy = vi.fn();
+    setInvokeHandler("dropbox_move_v2", moveSpy);
+
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+        dropboxFile("x.txt", "/parent/x.txt"),
+      ],
+      renderEntryRow: renderRowWithTestid,
+    });
+
+    // Drop the inbox item onto the inbox tab itself.
+    dragEntryToBucket("/parent/x.txt", /^Inbox/i);
+
+    // Nothing fired.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(moveSpy).not.toHaveBeenCalled();
+  });
+
+  it("drag onto a bucket whose state folder is missing still drops if target is Inbox", async () => {
+    // Specifically: dropping on Inbox is always valid. Dropping on a
+    // missing state shouldn't even be possible because the chip isn't
+    // rendered. We assert that here.
+    setupTwoStateForDrag();
+    renderWith({
+      parentEntries: [dropboxFolder("1__Processing")], // Ready missing
+      renderEntryRow: renderRowWithTestid,
+    });
+    expect(
+      screen.queryByRole("tab", { name: /^Ready/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("malformed dataTransfer payload is ignored without crashing", async () => {
+    setupTwoStateForDrag();
+    const moveSpy = vi.fn();
+    setInvokeHandler("dropbox_move_v2", moveSpy);
+
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+        dropboxFile("x.txt", "/parent/x.txt"),
+      ],
+      renderEntryRow: renderRowWithTestid,
+    });
+
+    const target = screen.getByRole("tab", { name: /^Ready/i });
+    const dt = fakeDataTransfer();
+    dt.setData("application/x-dropbox-pipeline-entry", "{not-json");
+    fireEvent.dragOver(target, { dataTransfer: dt });
+    fireEvent.drop(target, { dataTransfer: dt });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(moveSpy).not.toHaveBeenCalled();
   });
 });
 

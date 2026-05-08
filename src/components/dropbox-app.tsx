@@ -26,6 +26,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { PipelineView } from "@/components/pipeline-view";
 import { DropboxPipelineSource } from "@/lib/dropbox-pipeline-source";
+import { addRecentPipeline } from "@/lib/pipeline-recents";
 import { parseConfig, type ConfigIssue, type PipelineConfig } from "@/lib/pipeline/schema";
 import {
   dropboxConnect,
@@ -50,7 +51,7 @@ type Status =
   | { kind: "connected"; account: DropboxAccount }
   | { kind: "error"; message: string };
 
-export function DropboxApp() {
+export function DropboxApp({ initialPath }: { initialPath?: string } = {}) {
   const [status, setStatus] = useState<Status>({ kind: "loading" });
   const [connecting, setConnecting] = useState(false);
 
@@ -189,6 +190,7 @@ export function DropboxApp() {
   return (
     <RemoteBrowser
       account={status.account}
+      initialPath={initialPath}
       onDisconnect={() => void handleDisconnect()}
     />
   );
@@ -196,6 +198,8 @@ export function DropboxApp() {
 
 type RemoteBrowserProps = {
   account: DropboxAccount;
+  /** Optional initial Dropbox path to navigate to (otherwise root). */
+  initialPath?: string;
   onDisconnect: () => void;
 };
 
@@ -204,8 +208,12 @@ type Preview =
   | { kind: "ready"; entry: DropboxEntry; localPath: string }
   | { kind: "error"; entry: DropboxEntry; message: string };
 
-function RemoteBrowser({ account, onDisconnect }: RemoteBrowserProps) {
-  const [path, setPath] = useState("");
+function RemoteBrowser({
+  account,
+  initialPath,
+  onDisconnect,
+}: RemoteBrowserProps) {
+  const [path, setPath] = useState(initialPath ?? "");
   const [entries, setEntries] = useState<DropboxEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -257,8 +265,20 @@ function RemoteBrowser({ account, onDisconnect }: RemoteBrowserProps) {
   );
 
   useEffect(() => {
-    void load("");
-  }, [load]);
+    void load(initialPath ?? "");
+    // Only run on mount; subsequent navigations are user-driven.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Whenever a valid pipeline config loads, mirror it into the
+  // localStorage MRU so the dashboard can offer a quick-launch card.
+  useEffect(() => {
+    if (!pipelineConfig) return;
+    addRecentPipeline({
+      path,
+      name: pipelineConfig.name ?? (path === "" ? "Root" : path),
+    });
+  }, [pipelineConfig, path]);
 
   useEffect(() => {
     if (!preview) return;

@@ -8,24 +8,31 @@ from its current state folder to the next one in pipeline order.
 
 ## Status
 
-**Promote + Create-folder shipped.** Model layer + Dropbox source +
-read UI + write actions are all in place:
+**Workflow round shipped.** Model layer + Dropbox source + UI +
+write actions + workflow polish are all in place:
 
-- Auto-discovery: when you navigate into a Dropbox folder that
-  contains a valid `.dropbox-interface.json`, `DropboxApp` switches
-  automatically to `PipelineView`; otherwise it falls back to the flat
-  browser.
-- Promote: each item inside a state bucket gets a Promote button when
-  the bucket has a successor whose folder is present. Clicking it
-  moves the item via `/files/move_v2`, refreshes both source and
-  destination buckets, and shows an Undo toast (8s auto-dismiss; one
-  click reverses the move via another `move_v2`).
-- Create-folder: each missing-state warning row gets a "Create
-  folder" button that calls `/files/create_folder_v2` for the
-  parent-relative path and refreshes the parent listing on success.
+- **Auto-discovery.** A folder containing
+  `.dropbox-interface.json` swaps `DropboxApp` into `PipelineView`;
+  otherwise the flat browser.
+- **Promote** from a state bucket → next state, or from **Inbox** →
+  first state. Click the button or drag the row onto another
+  bucket chip — both routes land in the same `move_path` plumbing.
+- **Drag-and-drop.** Each row is `draggable` and emits a payload
+  containing `{ path, name, source: BucketRef }`; bucket chips are
+  `dragOver` / `drop` targets and fire the same `performMove` the
+  Promote button does. Same-bucket drops are no-ops; malformed
+  payloads are ignored defensively.
+- **Undo toast** appears after every successful move (button or
+  drag). 8s auto-dismiss, one-click reverse.
+- **Create-folder** affordance on each missing-state warning row.
+- **Recent pipelines.** `src/lib/pipeline-recents.ts` is a
+  localStorage MRU (5-cap, deduped by path) that `DropboxApp`
+  populates whenever a valid config loads. The dashboard surfaces
+  the list as a quick-launch card; clicking jumps straight into
+  the Dropbox app at the recent's path via the new
+  `DropboxApp.initialPath` prop.
 
-`delete_v2` is intentionally not shipped in this round — see
-THREAT_MODEL §D8c.
+`delete_v2` is intentionally still not shipped — see THREAT_MODEL §D8c.
 
 ## Why this exists
 
@@ -191,18 +198,20 @@ Done:
 5. ✅ **Promote action.** `dropbox_move_v2` + Promote button + Undo
    toast.
 6. ✅ **`dropbox_create_folder_v2`** for the missing-state affordance.
-   `delete_v2` deferred — see THREAT_MODEL §D8c.
+7. ✅ **Inbox → first-state Promote** verb (button + drag-drop
+   target).
+8. ✅ **Drag-and-drop promote** between any two buckets, including
+   Inbox-as-target (un-file an item back to the parent root).
+9. ✅ **Recent pipelines** quick-launch card on the dashboard
+   (`pipeline-recents.ts` + `DropboxApp.initialPath`).
 
 Next:
 
-7. **`delete_v2`** (when there's a clear use case). Behind a confirm.
-8. **Local backend** (optional). Mirror `DropboxPipelineSource` for
-   the local FS so the existing `FileBrowser` can host pipelines too.
-9. **Drag-and-drop promote**. Drag an entry between buckets in the
-   strip. Uses the same `move_path` plumbing.
-10. **Inbox → first state** quick action. Currently Inbox items have
-    no Promote target; a "File into <first-state>" verb would let
-    users sweep inbox into the pipeline without opening the flat view.
+10. **`delete_v2`** (when there's a clear use case). Behind a confirm.
+11. **Local backend** (optional). Mirror `DropboxPipelineSource` for
+    the local FS so the existing `FileBrowser` can host pipelines too.
+12. **Pinning recents** so important pipelines don't get pushed off the
+    list by routine browsing.
 
 ## Updating this doc
 

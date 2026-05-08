@@ -31,6 +31,9 @@ import { cn } from "@/lib/utils";
 
 const INBOX_ID = "__inbox__";
 
+/** Internal MIME type for the drag-and-drop payload between buckets. */
+const DRAG_MIME = "application/x-dropbox-pipeline-entry";
+
 type StateListing =
   | { kind: "loading" }
   | { kind: "ready"; entries: DropboxEntry[] }
@@ -79,14 +82,23 @@ type PipelineViewProps = {
   ) => ReactNode;
 };
 
+/**
+ * Discriminator for which bucket an item came from / is heading to. The
+ * Inbox is the parent folder itself; state buckets are subfolders. Move
+ * refresh logic is different for each (parent listing vs state listing).
+ */
+type BucketRef =
+  | { kind: "inbox" }
+  | { kind: "state"; id: string };
+
 type UndoableMove = {
   fromPath: string;
   toPath: string;
   entryName: string;
-  destStateName: string;
-  /** Source + dest state ids so we can re-invalidate them on undo. */
-  sourceStateId: string;
-  destStateId: string;
+  destBucketName: string;
+  /** Source + destination buckets so undo can re-invalidate the right ones. */
+  sourceBucket: BucketRef;
+  destBucket: BucketRef;
 };
 
 export function PipelineView(props: PipelineViewProps) {
@@ -145,6 +157,14 @@ export function PipelineView(props: PipelineViewProps) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [creatingState, setCreatingState] = useState<string | null>(null);
 
+  // Drag-and-drop state. Path of the row currently being dragged (so we
+  // can dim it) and the bucket id currently under the pointer (so we can
+  // highlight the drop target).
+  const [draggingPath, setDraggingPath] = useState<string | null>(null);
+  const [dragHoverBucketId, setDragHoverBucketId] = useState<string | null>(
+    null,
+  );
+
   // Auto-dismiss the undo toast after 8s. Cleared early when the user
   // clicks Dismiss or the parent path changes.
   useEffect(() => {
@@ -192,29 +212,48 @@ export function PipelineView(props: PipelineViewProps) {
     })();
   }
 
+  /**
+   * Refresh a single bucket after a successful move. State buckets get
+   * a fresh listing fetch; the Inbox is rederived from the parent
+   * listing, so we ask the caller to re-fetch that.
+   */
+  function refreshBucket(bucket: BucketRef, toFolderPath: string | null) {
+    if (bucket.kind === "inbox") {
+      onParentRefresh();
+    } else {
+      refreshStateListing(bucket.id, toFolderPath);
+    }
+  }
+
+  /**
+   * Display name for a bucket; used in the Promote button label and the
+   * Undo toast.
+   */
+  function bucketName(bucket: BucketRef): string {
+    if (bucket.kind === "inbox") return config.inbox.name ?? "Inbox";
+    return config.states.find((s) => s.id === bucket.id)?.name ?? bucket.id;
+  }
+
   async function performMove(
-    entry: DropboxEntry,
-    fromStateId: string,
-    toStateId: string,
-    toFolderPath: string,
+    entry: { path: string; name: string },
+    sourceBucket: BucketRef,
+    destBucket: BucketRef,
+    destFolderPath: string,
   ) {
     setActionError(null);
     setMovingEntryPath(entry.path);
-    const toPath = `${toFolderPath}/${entry.name}`;
-    const fromFolderPath = parentFolderOfPath(entry.path);
+    const toPath = joinPath(destFolderPath, entry.name);
     try {
       await dropboxMove(entry.path, toPath);
-      // Refresh both buckets so counts and contents reflect the move.
-      refreshStateListing(fromStateId, fromFolderPath);
-      refreshStateListing(toStateId, toFolderPath);
-      const dest = config.states.find((s) => s.id === toStateId);
+      refreshBucket(sourceBucket, parentFolderOfPath(entry.path));
+      refreshBucket(destBucket, destFolderPath);
       setUndoableMove({
         fromPath: entry.path,
         toPath,
         entryName: entry.name,
-        destStateName: dest?.name ?? toStateId,
-        sourceStateId: fromStateId,
-        destStateId: toStateId,
+        destBucketName: bucketName(destBucket),
+        sourceBucket,
+        destBucket,
       });
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
@@ -231,8 +270,8 @@ export function PipelineView(props: PipelineViewProps) {
     setMovingEntryPath(move.toPath);
     try {
       await dropboxMove(move.toPath, move.fromPath);
-      refreshStateListing(move.sourceStateId, parentFolderOfPath(move.fromPath));
-      refreshStateListing(move.destStateId, parentFolderOfPath(move.toPath));
+      refreshBucket(move.sourceBucket, parentFolderOfPath(move.fromPath));
+      refreshBucket(move.destBucket, parentFolderOfPath(move.toPath));
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -251,6 +290,41 @@ export function PipelineView(props: PipelineViewProps) {
     } finally {
       setCreatingState(null);
     }
+  }
+
+  /**
+   * Drop handler factory for a bucket chip. Validates the drag payload,
+   * skips no-op same-bucket drops, and dispatches a move from the source
+   * bucket (encoded in the dataTransfer) to this target bucket.
+   */
+  function handleDropOnBucket(targetBucket: Bucket) {
+    return (e: React.DragEvent<HTMLButtonElement>) => {
+      e.preventDefault();
+      setDragHoverBucketId(null);
+      const raw = e.dataTransfer.getData(DRAG_MIME);
+      if (!raw) return;
+      let payload: unknown;
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        return;
+      }
+      if (!isDragPayload(payload)) return;
+      const targetRef = bucketAsRef(targetBucket);
+      if (sameBucketRef(payload.source, targetRef)) return;
+
+      const destFolderPath =
+        targetBucket.kind === "inbox"
+          ? parentPath
+          : targetBucket.folder.path;
+
+      void performMove(
+        { path: payload.path, name: payload.name },
+        payload.source,
+        targetRef,
+        destFolderPath,
+      );
+    };
   }
 
   const buckets: Bucket[] = useMemo(() => {
@@ -342,19 +416,28 @@ export function PipelineView(props: PipelineViewProps) {
   // Render the contents of the selected bucket.
   const selectedBucket = buckets.find((b) => b.id === selectedId);
 
-  // Compute promote info for the selected state once and pass it to the
-  // row renderer. Promote is only offered inside state buckets that have
-  // a successor with a present folder.
-  const promoteContext = useMemo(() => {
-    if (!selectedBucket || selectedBucket.kind !== "state") return null;
-    const next = nextState(config, selectedBucket.id);
-    if (!next) return null;
-    const destFolder = classification.stateFolders[next.id];
-    if (!destFolder) return null; // dest folder missing → no promote
+  // Compute promote info for the selected bucket. Promote is offered:
+  //   - inside a state bucket whose successor has a present folder
+  //   - inside the Inbox bucket when the *first* state has a present folder
+  // (the latter is the "file into <first state>" verb).
+  const promoteContext = useMemo<PromoteContext | null>(() => {
+    if (!selectedBucket) return null;
+    let target: PipelineState | null = null;
+    let sourceBucket: BucketRef;
+    if (selectedBucket.kind === "inbox") {
+      target = config.states[0] ?? null;
+      sourceBucket = { kind: "inbox" };
+    } else {
+      target = nextState(config, selectedBucket.id);
+      sourceBucket = { kind: "state", id: selectedBucket.id };
+    }
+    if (!target) return null;
+    const destFolder = classification.stateFolders[target.id];
+    if (!destFolder) return null; // destination folder isn't there
     return {
-      currentStateId: selectedBucket.id,
-      destStateId: next.id,
-      destStateName: next.name,
+      sourceBucket,
+      destBucket: { kind: "state", id: target.id },
+      destStateName: target.name,
       destFolderPath: destFolder.path,
     };
   }, [selectedBucket, config, classification]);
@@ -375,11 +458,17 @@ export function PipelineView(props: PipelineViewProps) {
       if (!promoteContext) return;
       void performMove(
         entry,
-        promoteContext.currentStateId,
-        promoteContext.destStateId,
+        promoteContext.sourceBucket,
+        promoteContext.destBucket,
         promoteContext.destFolderPath,
       );
     },
+    sourceBucketRef: selectedBucket
+      ? bucketAsRef(selectedBucket)
+      : { kind: "inbox" },
+    draggingPath,
+    onDragStart: (entry) => setDraggingPath(entry.path),
+    onDragEnd: () => setDraggingPath(null),
   });
 
   const missing = classification.missing;
@@ -449,7 +538,7 @@ export function PipelineView(props: PipelineViewProps) {
         >
           <span className="truncate">
             Moved <strong>{undoableMove.entryName}</strong> to{" "}
-            <strong>{undoableMove.destStateName}</strong>.
+            <strong>{undoableMove.destBucketName}</strong>.
           </span>
           <span className="flex shrink-0 gap-1">
             <Button
@@ -486,6 +575,14 @@ export function PipelineView(props: PipelineViewProps) {
             bucket={b}
             selected={b.id === selectedId}
             onSelect={() => setSelectedId(b.id)}
+            dragHover={dragHoverBucketId === b.id}
+            onDragEnter={() => {
+              if (draggingPath) setDragHoverBucketId(b.id);
+            }}
+            onDragLeave={() =>
+              setDragHoverBucketId((prev) => (prev === b.id ? null : prev))
+            }
+            onDrop={handleDropOnBucket(b)}
           />
         ))}
       </div>
@@ -506,10 +603,18 @@ function BucketChip({
   bucket,
   selected,
   onSelect,
+  dragHover,
+  onDragEnter,
+  onDragLeave,
+  onDrop,
 }: {
   bucket: Bucket;
   selected: boolean;
   onSelect: () => void;
+  dragHover: boolean;
+  onDragEnter: () => void;
+  onDragLeave: () => void;
+  onDrop: (e: React.DragEvent<HTMLButtonElement>) => void;
 }) {
   const countText =
     bucket.kind === "inbox"
@@ -524,11 +629,22 @@ function BucketChip({
       role="tab"
       aria-selected={selected}
       onClick={onSelect}
+      // dragOver must preventDefault for the chip to be a valid drop
+      // target. dropEffect = "move" so the cursor reflects what'll happen.
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+      }}
+      onDragEnter={onDragEnter}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      data-drop-hover={dragHover ? "true" : undefined}
       className={cn(
         "flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition",
         selected
           ? "border-foreground bg-foreground text-background"
           : "border-border bg-background hover:border-foreground/40",
+        dragHover && "ring-2 ring-foreground/60 ring-offset-2",
       )}
     >
       <span className="font-medium">{bucket.name}</span>
@@ -558,8 +674,8 @@ function BucketChip({
 }
 
 type PromoteContext = {
-  currentStateId: string;
-  destStateId: string;
+  sourceBucket: BucketRef;
+  destBucket: BucketRef;
   destStateName: string;
   destFolderPath: string;
 };
@@ -577,6 +693,12 @@ type RenderArgs = {
   promoteContext: PromoteContext | null;
   movingEntryPath: string | null;
   onPromote: (entry: DropboxEntry) => void;
+  /** BucketRef of the currently-rendered bucket; baked into drag payloads. */
+  sourceBucketRef: BucketRef;
+  /** Path of the row currently being dragged, so rendered rows can dim it. */
+  draggingPath: string | null;
+  onDragStart: (entry: DropboxEntry) => void;
+  onDragEnd: () => void;
 };
 
 function renderBucketContents(args: RenderArgs): ReactNode {
@@ -641,8 +763,30 @@ function renderEntryList(
                 onClick: () => args.onPromote(entry),
               }
             : undefined;
+          const isDragging = args.draggingPath === entry.path;
           return (
-            <li key={entry.path}>
+            <li
+              key={entry.path}
+              draggable
+              data-dragging={isDragging ? "true" : undefined}
+              className={cn(
+                "rounded-md transition",
+                isDragging && "opacity-40",
+              )}
+              onDragStart={(e) => {
+                e.dataTransfer.setData(
+                  DRAG_MIME,
+                  JSON.stringify({
+                    path: entry.path,
+                    name: entry.name,
+                    source: args.sourceBucketRef,
+                  }),
+                );
+                e.dataTransfer.effectAllowed = "move";
+                args.onDragStart(entry);
+              }}
+              onDragEnd={() => args.onDragEnd()}
+            >
               {args.renderEntryRow(entry, {
                 saving: args.savingPath === entry.path,
                 onPreview: () => args.onPreviewImage(entry),
@@ -675,4 +819,42 @@ function byPath(
 function parentFolderOfPath(p: string): string {
   const i = p.lastIndexOf("/");
   return i <= 0 ? "" : p.substring(0, i);
+}
+
+/**
+ * Join a folder path with a basename. Handles the root case (empty
+ * folder = "" or "/") and avoids double slashes.
+ */
+function joinPath(folder: string, name: string): string {
+  if (folder === "" || folder === "/") return `/${name}`;
+  return `${folder.replace(/\/+$/, "")}/${name}`;
+}
+
+/** Convert a fully-shaped Bucket into the minimal BucketRef discriminator. */
+function bucketAsRef(b: Bucket): BucketRef {
+  return b.kind === "inbox" ? { kind: "inbox" } : { kind: "state", id: b.id };
+}
+
+function sameBucketRef(a: BucketRef, b: BucketRef): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "inbox") return true;
+  return a.id === (b as { kind: "state"; id: string }).id;
+}
+
+/**
+ * Validate a drag-payload coming back through `dataTransfer.getData`.
+ * Defensive because the value is opaque JSON — even though we wrote it
+ * ourselves, there's no compile-time guarantee about its shape.
+ */
+type DragPayload = { path: string; name: string; source: BucketRef };
+function isDragPayload(v: unknown): v is DragPayload {
+  if (!v || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  if (typeof o.path !== "string" || typeof o.name !== "string") return false;
+  const src = o.source;
+  if (!src || typeof src !== "object") return false;
+  const s = src as Record<string, unknown>;
+  if (s.kind === "inbox") return true;
+  if (s.kind === "state" && typeof s.id === "string") return true;
+  return false;
 }

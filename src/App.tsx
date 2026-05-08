@@ -1,5 +1,5 @@
-import { ArrowLeft, Cloud, FolderOpen, MonitorCog } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ArrowLeft, Cloud, FolderOpen, History, MonitorCog } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import { DesktopWorkspaceApp } from "@/components/desktop-workspace-app";
 import { DropboxApp } from "@/components/dropbox-app";
@@ -13,11 +13,27 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  getRecentPipelines,
+  type RecentPipeline,
+} from "@/lib/pipeline-recents";
 
 type AppId = "dashboard" | "workspace" | "photos" | "dropbox";
 
 function App() {
   const [activeApp, setActiveApp] = useState<AppId>("dashboard");
+  const [dropboxInitialPath, setDropboxInitialPath] = useState<
+    string | undefined
+  >(undefined);
+  const [recents, setRecents] = useState<RecentPipeline[]>([]);
+
+  // Re-read the recents list every time the dashboard becomes visible so
+  // a freshly-visited pipeline shows up without a window reload.
+  useEffect(() => {
+    if (activeApp === "dashboard") {
+      setRecents(getRecentPipelines());
+    }
+  }, [activeApp]);
 
   const title = useMemo(() => {
     switch (activeApp) {
@@ -31,6 +47,11 @@ function App() {
         return "Dashboard";
     }
   }, [activeApp]);
+
+  function openDropboxAt(path: string | undefined) {
+    setDropboxInitialPath(path);
+    setActiveApp("dropbox");
+  }
 
   return (
     <div className="flex min-h-screen flex-col gap-6 bg-background p-6">
@@ -59,57 +80,102 @@ function App() {
       </div>
 
       {activeApp === "dashboard" ? (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <Card className="flex flex-col">
-            <CardHeader className="flex flex-col gap-2">
-              <CardTitle className="flex items-center gap-2">
-                <MonitorCog />
-                Desktop Workspace
-              </CardTitle>
-              <CardDescription>
-                Open the desktop shell and browse folders inside a single app.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button type="button" onClick={() => setActiveApp("workspace")}>
-                Launch workspace app
-              </Button>
-            </CardContent>
-          </Card>
+        <div className="flex flex-col gap-4">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <Card className="flex flex-col">
+              <CardHeader className="flex flex-col gap-2">
+                <CardTitle className="flex items-center gap-2">
+                  <MonitorCog />
+                  Desktop Workspace
+                </CardTitle>
+                <CardDescription>
+                  Open the desktop shell and browse folders inside a single app.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button type="button" onClick={() => setActiveApp("workspace")}>
+                  Launch workspace app
+                </Button>
+              </CardContent>
+            </Card>
 
-          <Card className="flex flex-col">
-            <CardHeader className="flex flex-col gap-2">
-              <CardTitle className="flex items-center gap-2">
-                <FolderOpen />
-                Photo Viewer
-              </CardTitle>
-              <CardDescription>
-                Browse directories and preview supported image files quickly.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button type="button" onClick={() => setActiveApp("photos")}>
-                Open photo app
-              </Button>
-            </CardContent>
-          </Card>
+            <Card className="flex flex-col">
+              <CardHeader className="flex flex-col gap-2">
+                <CardTitle className="flex items-center gap-2">
+                  <FolderOpen />
+                  Photo Viewer
+                </CardTitle>
+                <CardDescription>
+                  Browse directories and preview supported image files quickly.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button type="button" onClick={() => setActiveApp("photos")}>
+                  Open photo app
+                </Button>
+              </CardContent>
+            </Card>
 
-          <Card className="flex flex-col">
-            <CardHeader className="flex flex-col gap-2">
-              <CardTitle className="flex items-center gap-2">
-                <Cloud />
-                Dropbox
-              </CardTitle>
-              <CardDescription>
-                Connect your Dropbox account and browse remote folders. Read-only.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button type="button" onClick={() => setActiveApp("dropbox")}>
-                Open Dropbox
-              </Button>
-            </CardContent>
-          </Card>
+            <Card className="flex flex-col">
+              <CardHeader className="flex flex-col gap-2">
+                <CardTitle className="flex items-center gap-2">
+                  <Cloud />
+                  Dropbox
+                </CardTitle>
+                <CardDescription>
+                  Connect your Dropbox account and browse remote folders.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button type="button" onClick={() => openDropboxAt(undefined)}>
+                  Open Dropbox
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+
+          {recents.length > 0 ? (
+            <Card className="flex flex-col">
+              <CardHeader className="flex flex-col gap-2 pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <History />
+                  Recent pipelines
+                </CardTitle>
+                <CardDescription>
+                  Folders where a <code>.dropbox-interface.json</code> opened
+                  last. Click to jump back in.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ul
+                  aria-label="Recent pipelines"
+                  className="flex flex-col gap-2"
+                >
+                  {recents.map((r) => (
+                    <li key={r.path}>
+                      <button
+                        type="button"
+                        onClick={() => openDropboxAt(r.path)}
+                        className="flex w-full items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2 text-left transition hover:border-foreground/40"
+                      >
+                        <span className="flex min-w-0 flex-col">
+                          <span className="truncate text-sm font-medium">
+                            {r.name}
+                          </span>
+                          <span className="truncate font-mono text-xs text-muted-foreground">
+                            {r.path === "" ? "/ (root)" : r.path}
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {formatRelativeTime(r.visitedAt, Date.now())}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          ) : null}
         </div>
       ) : null}
 
@@ -125,11 +191,30 @@ function App() {
       ) : null}
       {activeApp === "dropbox" ? (
         <ErrorBoundary label="Dropbox">
-          <DropboxApp />
+          <DropboxApp initialPath={dropboxInitialPath} />
         </ErrorBoundary>
       ) : null}
     </div>
   );
+}
+
+/**
+ * "5m ago" / "2h ago" / "3d ago"-style relative timestamp. Pure;
+ * exported for the test file.
+ */
+export function formatRelativeTime(ms: number, now: number): string {
+  const delta = Math.max(0, now - ms);
+  const sec = Math.floor(delta / 1000);
+  if (sec < 60) return "just now";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day}d ago`;
+  const month = Math.floor(day / 30);
+  if (month < 12) return `${month}mo ago`;
+  return `${Math.floor(month / 12)}y ago`;
 }
 
 export default App;
