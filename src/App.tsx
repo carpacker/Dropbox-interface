@@ -2,6 +2,7 @@ import { ArrowLeft, FolderOpen, MonitorCog } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { DesktopWorkspaceApp } from "@/components/desktop-workspace-app";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { PhotosApp } from "@/components/photos-app";
 import { Button } from "@/components/ui/button";
 import {
@@ -92,8 +93,16 @@ function App() {
         </div>
       ) : null}
 
-      {activeApp === "workspace" ? <DesktopWorkspaceApp /> : null}
-      {activeApp === "photos" ? <PhotosApp /> : null}
+      {activeApp === "workspace" ? (
+        <ErrorBoundary label="Desktop Workspace">
+          <DesktopWorkspaceApp />
+        </ErrorBoundary>
+      ) : null}
+      {activeApp === "photos" ? (
+        <ErrorBoundary label="Photos">
+          <PhotosApp />
+        </ErrorBoundary>
+      ) : null}
     </div>
   );
 }

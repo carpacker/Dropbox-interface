@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
@@ -37,6 +38,35 @@ export default defineConfig(async () => ({
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
+    },
+  },
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./src/test/setup.ts"],
+    css: false,
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    alias: {
+      "@tauri-apps/api/core": path.resolve(
+        workspaceRoot,
+        "./src/test/tauri-core-mock.ts",
+      ),
+      "@tauri-apps/api/event": path.resolve(
+        workspaceRoot,
+        "./src/test/tauri-event-mock.ts",
+      ),
+    },
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "html"],
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: [
+        "src/**/*.d.ts",
+        "src/main.tsx",
+        "src/test/**",
+        "src/components/ui/**",
+        "src/**/*.{test,spec}.{ts,tsx}",
+      ],
     },
   },
 }));
