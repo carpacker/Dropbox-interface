@@ -48,6 +48,11 @@ For the Rust side: `cd src-tauri && cargo test` and `cargo clippy --all-targets 
 - **Rust** unit tests live alongside the source under `#[cfg(test)] mod tests { … }`. Pure helpers (PKCE, URL building, response parsing, sort/filter logic) are tested directly. `service.rs` is tested against a `wiremock` server with an `InMemoryStore` standing in for the keyring and a `FixedClock` for refresh timing.
 - **CI** runs both suites plus `tsc --noEmit`, `vite build`, and `cargo clippy` on every push and PR (`.github/workflows/ci.yml`). Tauri Linux deps including `libsecret-1-dev` are installed for the Rust job.
 
+## Architecture docs
+
+- [`docs/architecture/pipelines.md`](docs/architecture/pipelines.md) — state-aware folder pipelines (the `1__Processing` / `2__ready` review workflow). Model layer is in `src/lib/pipeline/` and is backend-agnostic (`PipelineSource` is the seam). UI + Dropbox source land in follow-up rounds.
+- [`THREAT_MODEL.md`](THREAT_MODEL.md) — security decisions and accepted residual risks. Update when a feature touches network, filesystem, IPC, or auth.
+
 ## shadcn/ui
 
 Add components with:
