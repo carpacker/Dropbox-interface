@@ -1,10 +1,24 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 export type FsEntry = {
   name: string;
   path: string;
   isDirectory: boolean;
 };
+
+export const IMAGE_EXTENSIONS = [
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".gif",
+  ".webp",
+  ".bmp",
+] as const;
+
+export function isImageFile(path: string): boolean {
+  const lowered = path.toLowerCase();
+  return IMAGE_EXTENSIONS.some((ext) => lowered.endsWith(ext));
+}
 
 export function defaultLocalRoot() {
   return invoke<string>("default_local_root");
@@ -18,6 +32,11 @@ export function listDirectory(path: string) {
   return invoke<FsEntry[]>("list_directory", { path });
 }
 
-export function readImageDataUrl(path: string) {
-  return invoke<string>("read_image_data_url", { path });
+/**
+ * Convert a local filesystem path into a URL the webview can load via the
+ * Tauri asset protocol. Streams the file directly into <img>/<video>/etc
+ * without round-tripping through JS memory like a base64 data URL would.
+ */
+export function imageSrc(path: string): string {
+  return convertFileSrc(path);
 }

@@ -17,13 +17,13 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
   defaultLocalRoot,
+  imageSrc,
+  isImageFile,
   listDirectory,
   parentDirectory,
-  readImageDataUrl,
   type FsEntry,
 } from "@/lib/tauri-fs";
 import { BRIDGE_PHOTOS_SEED_PREFIX } from "@/lib/bridge-photos-seed";
@@ -125,6 +125,10 @@ export function PhotosApp({ variant = "page", persistenceKey }: PhotosAppProps) 
     })();
   }, [loadPath, scope]);
 
+  const folderEntries = useMemo(
+    () => entries.filter((entry) => entry.isDirectory),
+    [entries],
+  );
   const imageEntries = useMemo(
     () => entries.filter((entry) => !entry.isDirectory && isImageFile(entry.path)),
     [entries],
@@ -261,6 +265,19 @@ export function PhotosApp({ variant = "page", persistenceKey }: PhotosAppProps) 
     }
   }
 
+  useEffect(() => {
+    if (!selectedPath) {
+      return;
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setSelectedPath(null);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedPath]);
+
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,380px),minmax(0,1fr)]">
       <Card className="flex flex-col gap-0 overflow-hidden">
@@ -280,47 +297,31 @@ export function PhotosApp({ variant = "page", persistenceKey }: PhotosAppProps) 
               void loadPath(pathInput);
             }}
           >
-            <Input
-              value={pathInput}
-              onChange={(event) => setPathInput(event.currentTarget.value)}
-              className="font-mono text-xs sm:text-sm"
-              placeholder="Enter a folder path"
-              aria-label="Photo folder path"
-            />
-            <div className="flex flex-row gap-2">
-              <Button type="submit" disabled={loading}>
-                Go
-              </Button>
+            {error}
+          </p>
+        ) : null}
+
+        {folderEntries.length > 0 ? (
+          <div
+            className="flex flex-wrap gap-2"
+            aria-label="Subfolders"
+          >
+            {folderEntries.map((entry) => (
               <Button
+                key={entry.path}
                 type="button"
                 variant="outline"
-                size="icon"
-                disabled={loading || !currentPath}
-                onClick={() => void handleGoUp()}
-                aria-label="Parent folder"
+                size="sm"
+                onClick={() => void loadPath(entry.path)}
               >
-                <ChevronUp data-icon="inline-start" />
+                <Folder data-icon="inline-start" />
+                <span className="max-w-[16ch] truncate">{entry.name}</span>
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                disabled={loading || !currentPath}
-                onClick={() => void loadPath(currentPath)}
-                aria-label="Refresh photo listing"
-              >
-                <RefreshCw data-icon="inline-start" />
-              </Button>
-            </div>
-          </form>
+            ))}
+          </div>
+        ) : null}
 
-          {error ? (
-            <p className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {error}
-            </p>
-          ) : null}
-
-          <Separator />
+        <Separator />
 
           <ScrollArea
             className={`rounded-lg border ${
@@ -443,8 +444,8 @@ export function PhotosApp({ variant = "page", persistenceKey }: PhotosAppProps) 
               </p>
             )}
           </div>
-        </CardContent>
-      </Card>
-    </div>
+        </div>
+      ) : null}
+    </Card>
   );
 }

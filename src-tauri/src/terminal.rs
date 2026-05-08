@@ -244,3 +244,69 @@ pub fn terminal_resize(
 pub fn terminal_kill(session: State<'_, TerminalSession>) -> Result<(), String> {
     session.kill()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_login_shell_resolves_without_panic() {
+        // succeeds whether or not $SHELL is set: falls back to /bin/sh
+        assert!(build_shell_command("login").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_explicit_shells_are_accepted() {
+        assert!(build_shell_command("sh").is_ok());
+        assert!(build_shell_command("bash").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_legacy_posix_alias_is_accepted() {
+        assert!(build_shell_command("posix").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_empty_string_is_accepted_and_uses_login_default() {
+        assert!(build_shell_command("").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_unknown_shell_is_rejected_with_helpful_message() {
+        let err = build_shell_command("zsh").unwrap_err();
+        assert!(err.contains("Unknown shell"), "got: {err}");
+        assert!(err.contains("login"), "expected hint listing supported shells");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_shell_string_is_trimmed() {
+        assert!(build_shell_command("  bash  ").is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_explicit_shells_are_accepted() {
+        assert!(build_shell_command("powershell").is_ok());
+        assert!(build_shell_command("cmd").is_ok());
+        assert!(build_shell_command("pwsh").is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_empty_string_uses_powershell_default() {
+        assert!(build_shell_command("").is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_unknown_shell_is_rejected() {
+        let err = build_shell_command("zsh").unwrap_err();
+        assert!(err.contains("Unknown shell"));
+    }
+}

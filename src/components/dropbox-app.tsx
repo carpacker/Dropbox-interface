@@ -1,0 +1,707 @@
+import {
+  AlertCircle,
+  ArrowRight,
+  ChevronUp,
+  Download,
+  File,
+  Folder,
+  ImageIcon,
+  LogOut,
+  MessageSquare,
+  Plug,
+  RefreshCw,
+  X,
+} from "lucide-react";
+import { save } from "@tauri-apps/plugin-dialog";
+import { useCallback, useEffect, useState } from "react";
+
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
+import { PipelineView } from "@/components/pipeline-view";
+import { DropboxPipelineSource } from "@/lib/dropbox-pipeline-source";
+import { addRecentPipeline } from "@/lib/pipeline-recents";
+import { parseConfig, type ConfigIssue, type PipelineConfig } from "@/lib/pipeline/schema";
+import {
+  dropboxConnect,
+  dropboxDisconnect,
+  dropboxDownloadToTemp,
+  dropboxGetThumbnail,
+  dropboxIsConfigured,
+  dropboxListFolder,
+  dropboxLocalSrc,
+  dropboxParent,
+  dropboxSaveFileTo,
+  dropboxStatus,
+  isDropboxImage,
+  type DropboxAccount,
+  type DropboxEntry,
+} from "@/lib/tauri-dropbox";
+
+type Status =
+  | { kind: "loading" }
+  | { kind: "not-configured" }
+  | { kind: "disconnected" }
+  | { kind: "connected"; account: DropboxAccount }
+  | { kind: "error"; message: string };
+
+export function DropboxApp({ initialPath }: { initialPath?: string } = {}) {
+  const [status, setStatus] = useState<Status>({ kind: "loading" });
+  const [connecting, setConnecting] = useState(false);
+
+  const refreshStatus = useCallback(async () => {
+    if (!dropboxIsConfigured()) {
+      setStatus({ kind: "not-configured" });
+      return;
+    }
+    try {
+      const account = await dropboxStatus();
+      setStatus(
+        account ? { kind: "connected", account } : { kind: "disconnected" },
+      );
+    } catch (e) {
+      setStatus({
+        kind: "error",
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshStatus();
+  }, [refreshStatus]);
+
+  async function handleConnect() {
+    setConnecting(true);
+    try {
+      const account = await dropboxConnect();
+      setStatus({ kind: "connected", account });
+    } catch (e) {
+      setStatus({
+        kind: "error",
+        message: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    try {
+      await dropboxDisconnect();
+      setStatus({ kind: "disconnected" });
+    } catch (e) {
+      setStatus({
+        kind: "error",
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  if (status.kind === "loading") {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Dropbox</CardTitle>
+          <CardDescription>Checking connection…</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  if (status.kind === "not-configured") {
+    return (
+      <Card>
+        <CardHeader className="flex flex-col gap-2">
+          <CardTitle className="flex items-center gap-2">
+            <AlertCircle data-icon="inline-start" />
+            Dropbox app key missing
+          </CardTitle>
+          <CardDescription>
+            Register an app at{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-xs">
+              dropbox.com/developers/apps
+            </code>{" "}
+            (Scoped access · App folder), then add the App key to{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-xs">
+              .env.local
+            </code>{" "}
+            as{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-xs">
+              VITE_DROPBOX_APP_KEY=…
+            </code>{" "}
+            and restart the app.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  if (status.kind === "error") {
+    return (
+      <Card>
+        <CardHeader className="flex flex-col gap-2">
+          <CardTitle>Dropbox</CardTitle>
+          <CardDescription>Something went wrong.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <p
+            role="alert"
+            className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          >
+            {status.message}
+          </p>
+          <div>
+            <Button type="button" variant="outline" onClick={() => void refreshStatus()}>
+              Try again
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (status.kind === "disconnected") {
+    return (
+      <Card>
+        <CardHeader className="flex flex-col gap-2">
+          <CardTitle>Dropbox</CardTitle>
+          <CardDescription>
+            Connect your Dropbox account to browse your remote folders alongside
+            local ones. Read-only access.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button type="button" disabled={connecting} onClick={() => void handleConnect()}>
+            <Plug data-icon="inline-start" />
+            {connecting ? "Connecting…" : "Connect Dropbox"}
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <RemoteBrowser
+      account={status.account}
+      initialPath={initialPath}
+      onDisconnect={() => void handleDisconnect()}
+    />
+  );
+}
+
+type RemoteBrowserProps = {
+  account: DropboxAccount;
+  /** Optional initial Dropbox path to navigate to (otherwise root). */
+  initialPath?: string;
+  onDisconnect: () => void;
+};
+
+type Preview =
+  | { kind: "loading"; entry: DropboxEntry }
+  | { kind: "ready"; entry: DropboxEntry; localPath: string }
+  | { kind: "error"; entry: DropboxEntry; message: string };
+
+function RemoteBrowser({
+  account,
+  initialPath,
+  onDisconnect,
+}: RemoteBrowserProps) {
+  const [path, setPath] = useState(initialPath ?? "");
+  const [entries, setEntries] = useState<DropboxEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [savingPath, setSavingPath] = useState<string | null>(null);
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [pipelineConfig, setPipelineConfig] = useState<PipelineConfig | null>(
+    null,
+  );
+  const [pipelineIssues, setPipelineIssues] = useState<ConfigIssue[] | null>(
+    null,
+  );
+
+  // Stable instance — pure, no internal state worth caching across renders.
+  const [pipelineSource] = useState(() => new DropboxPipelineSource());
+
+  const load = useCallback(
+    async (next: string) => {
+      setLoading(true);
+      setError(null);
+      // Reset pipeline detection on each navigation; we'll re-evaluate
+      // against the new path's listing.
+      setPipelineConfig(null);
+      setPipelineIssues(null);
+      try {
+        const [rows, rawConfig] = await Promise.all([
+          dropboxListFolder(next),
+          // A failed config read shouldn't block the browse; swallow it
+          // and the user just sees the flat view.
+          pipelineSource.loadConfig(next).catch(() => null),
+        ]);
+        setEntries(rows);
+        setPath(next);
+        if (rawConfig != null) {
+          const parsed = parseConfig(rawConfig);
+          if (parsed.ok) {
+            setPipelineConfig(parsed.config);
+          } else {
+            setPipelineIssues(parsed.issues);
+          }
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [pipelineSource],
+  );
+
+  useEffect(() => {
+    void load(initialPath ?? "");
+    // Only run on mount; subsequent navigations are user-driven.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Whenever a valid pipeline config loads, mirror it into the
+  // localStorage MRU so the dashboard can offer a quick-launch card.
+  useEffect(() => {
+    if (!pipelineConfig) return;
+    addRecentPipeline({
+      path,
+      name: pipelineConfig.name ?? (path === "" ? "Root" : path),
+    });
+  }, [pipelineConfig, path]);
+
+  useEffect(() => {
+    if (!preview) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setPreview(null);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [preview]);
+
+  function handleGoUp() {
+    const parent = dropboxParent(path);
+    if (parent !== null) {
+      void load(parent);
+    }
+  }
+
+  async function openPreview(entry: DropboxEntry) {
+    setPreview({ kind: "loading", entry });
+    try {
+      const localPath = await dropboxDownloadToTemp(entry.path);
+      setPreview({ kind: "ready", entry, localPath });
+    } catch (e) {
+      setPreview({
+        kind: "error",
+        entry,
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  async function handleSave(entry: DropboxEntry) {
+    setSavedNotice(null);
+    let dest: string | null;
+    try {
+      dest = await save({ defaultPath: entry.name });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    if (!dest) return;
+    setSavingPath(entry.path);
+    try {
+      await dropboxSaveFileTo(entry.path, dest);
+      setSavedNotice(`Saved “${entry.name}” to ${dest}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingPath(null);
+    }
+  }
+
+  return (
+    <Card className="flex flex-col gap-0 overflow-hidden">
+      <CardHeader className="flex flex-col gap-3 border-b pb-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 flex-col gap-1">
+          <CardTitle>Dropbox · {account.displayName}</CardTitle>
+          <CardDescription className="truncate">{account.email}</CardDescription>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={onDisconnect}>
+          <LogOut data-icon="inline-start" />
+          Disconnect
+        </Button>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4 pt-4">
+        <div className="flex items-center gap-2">
+          <code
+            className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1.5 font-mono text-xs"
+            aria-label="Current Dropbox path"
+          >
+            {path === "" ? "/ (root)" : path}
+          </code>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            disabled={loading || dropboxParent(path) === null}
+            onClick={handleGoUp}
+            aria-label="Parent folder"
+          >
+            <ChevronUp data-icon="inline-start" />
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            disabled={loading}
+            onClick={() => void load(path)}
+            aria-label="Refresh listing"
+          >
+            <RefreshCw data-icon="inline-start" />
+          </Button>
+        </div>
+
+        {error ? (
+          <p
+            role="alert"
+            className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          >
+            {error}
+          </p>
+        ) : null}
+
+        {savedNotice ? (
+          <p
+            role="status"
+            className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400"
+          >
+            {savedNotice}
+          </p>
+        ) : null}
+
+        {pipelineIssues ? (
+          <div
+            role="status"
+            className="flex flex-col gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-300"
+          >
+            <p className="font-medium">
+              .dropbox-interface.json is invalid; falling back to flat view.
+            </p>
+            <ul className="list-disc pl-5 text-xs">
+              {pipelineIssues.slice(0, 5).map((issue, i) => (
+                <li key={`${issue.path}-${i}`}>
+                  <code>{issue.path || "(root)"}</code>: {issue.message}
+                </li>
+              ))}
+              {pipelineIssues.length > 5 ? (
+                <li>…and {pipelineIssues.length - 5} more.</li>
+              ) : null}
+            </ul>
+          </div>
+        ) : null}
+
+        <Separator />
+
+        {pipelineConfig ? (
+          <PipelineView
+            parentPath={path}
+            config={pipelineConfig}
+            parentEntries={entries}
+            onNavigateInto={(p) => void load(p)}
+            onParentRefresh={() => void load(path)}
+            onPreviewImage={(e) => void openPreview(e)}
+            onSaveFile={(e) => void handleSave(e)}
+            savingPath={savingPath}
+            renderEntryRow={(entry, opts) => (
+              <EntryRow
+                entry={entry}
+                saving={opts.saving}
+                onOpenFolder={opts.onOpenFolder}
+                onPreview={opts.onPreview}
+                onSave={opts.onSave}
+                promote={opts.promote}
+                select={opts.select}
+                note={opts.note}
+              />
+            )}
+          />
+        ) : (
+          <ScrollArea className="h-[min(55vh,520px)] rounded-lg border">
+            <ul className="flex flex-col gap-1 p-2">
+              {loading ? (
+                <li className="px-2 py-6 text-sm text-muted-foreground">Loading…</li>
+              ) : entries.length === 0 ? (
+                <li className="px-2 py-6 text-sm text-muted-foreground">
+                  This folder is empty.
+                </li>
+              ) : (
+                entries.map((entry) => (
+                  <li key={entry.path}>
+                    <EntryRow
+                      entry={entry}
+                      saving={savingPath === entry.path}
+                      onOpenFolder={(p) => void load(p)}
+                      onPreview={() => void openPreview(entry)}
+                      onSave={() => void handleSave(entry)}
+                    />
+                  </li>
+                ))
+              )}
+            </ul>
+          </ScrollArea>
+        )}
+      </CardContent>
+
+      {preview ? (
+        <PreviewLightbox
+          preview={preview}
+          onClose={() => setPreview(null)}
+        />
+      ) : null}
+    </Card>
+  );
+}
+
+type EntryRowProps = {
+  entry: DropboxEntry;
+  saving: boolean;
+  onOpenFolder: (path: string) => void;
+  onPreview: () => void;
+  onSave: () => void;
+  /**
+   * When set, renders a Promote button whose tooltip is the destination
+   * state name. Only present when the entry lives inside a state bucket
+   * with a known successor.
+   */
+  promote?: {
+    targetStateName: string;
+    inFlight: boolean;
+    onClick: () => void;
+  };
+  /**
+   * When set, renders a leading checkbox for bulk selection. Only the
+   * pipeline view threads this; the flat browser leaves it undefined.
+   */
+  select?: {
+    selected: boolean;
+    onToggle: () => void;
+  };
+  /** Local-only review note state for this row. */
+  note?: {
+    hasNote: boolean;
+    onClick: () => void;
+  };
+};
+
+function EntryRow({
+  entry,
+  saving,
+  onOpenFolder,
+  onPreview,
+  onSave,
+  promote,
+  select,
+  note,
+}: EntryRowProps) {
+  const isImage = isDropboxImage(entry);
+  const isFolder = entry.kind === "folder";
+
+  function handleMainClick() {
+    if (isFolder) {
+      onOpenFolder(entry.path);
+    } else if (isImage) {
+      onPreview();
+    }
+  }
+
+  const mainDisabled = !isFolder && !isImage;
+
+  return (
+    <div className="flex items-center gap-1.5">
+      {select ? (
+        <input
+          type="checkbox"
+          checked={select.selected}
+          onChange={select.onToggle}
+          aria-label={`Select ${entry.name}`}
+          className="ml-1 h-4 w-4 shrink-0 cursor-pointer"
+        />
+      ) : null}
+      <Button
+        type="button"
+        variant="ghost"
+        className="h-auto min-w-0 flex-1 justify-start gap-2 px-2 py-1.5 font-normal"
+        disabled={mainDisabled}
+        onClick={handleMainClick}
+        aria-label={
+          isFolder
+            ? `Open folder ${entry.name}`
+            : isImage
+              ? `Preview ${entry.name}`
+              : entry.name
+        }
+      >
+        <EntryIcon entry={entry} isImage={isImage} />
+        <span className="truncate">{entry.name}</span>
+      </Button>
+      {promote ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={promote.inFlight}
+          onClick={promote.onClick}
+          aria-label={`Promote ${entry.name} to ${promote.targetStateName}`}
+          title={`Promote to ${promote.targetStateName}`}
+        >
+          <ArrowRight data-icon="inline-start" />
+          <span className="hidden sm:inline">
+            {promote.inFlight ? "Moving…" : promote.targetStateName}
+          </span>
+        </Button>
+      ) : null}
+      {note ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          onClick={note.onClick}
+          aria-label={
+            note.hasNote
+              ? `Edit note for ${entry.name}`
+              : `Add note for ${entry.name}`
+          }
+          aria-pressed={note.hasNote ? "true" : "false"}
+          title={note.hasNote ? "Edit note" : "Add note"}
+          className="relative"
+        >
+          <MessageSquare data-icon="inline-start" />
+          {note.hasNote ? (
+            <span
+              data-testid={`note-indicator-${entry.path}`}
+              aria-hidden="true"
+              className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-foreground"
+            />
+          ) : null}
+        </Button>
+      ) : null}
+      {!isFolder ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          disabled={saving}
+          onClick={onSave}
+          aria-label={`Save ${entry.name} to disk`}
+        >
+          <Download data-icon="inline-start" />
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function EntryIcon({ entry, isImage }: { entry: DropboxEntry; isImage: boolean }) {
+  const [thumb, setThumb] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!isImage) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const url = await dropboxGetThumbnail(entry.path, "w64h64");
+        if (!cancelled) setThumb(url);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [entry.path, isImage]);
+
+  if (entry.kind === "folder") {
+    return <Folder data-icon="inline-start" />;
+  }
+  if (!isImage || failed) {
+    return <File data-icon="inline-start" />;
+  }
+  if (!thumb) {
+    return <ImageIcon data-icon="inline-start" />;
+  }
+  return (
+    <img
+      src={thumb}
+      alt=""
+      aria-hidden="true"
+      data-testid={`thumbnail-${entry.path}`}
+      className="h-5 w-5 shrink-0 rounded-sm object-cover"
+    />
+  );
+}
+
+function PreviewLightbox({
+  preview,
+  onClose,
+}: {
+  preview: Preview;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Preview ${preview.entry.name}`}
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur"
+    >
+      <div
+        className="relative flex max-h-full max-w-full flex-col items-center gap-2"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          onClick={onClose}
+          className="absolute right-2 top-2 z-10"
+          aria-label="Close preview"
+        >
+          <X data-icon="inline-start" />
+        </Button>
+        {preview.kind === "loading" ? (
+          <p className="rounded-lg border bg-card px-6 py-4 text-sm text-muted-foreground">
+            Downloading {preview.entry.name}…
+          </p>
+        ) : preview.kind === "error" ? (
+          <p
+            role="alert"
+            className="max-w-md rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+          >
+            {preview.message}
+          </p>
+        ) : (
+          <img
+            src={dropboxLocalSrc(preview.localPath)}
+            alt={preview.entry.name}
+            className="max-h-[85vh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
+          />
+        )}
+      </div>
+    </div>
+  );
+}

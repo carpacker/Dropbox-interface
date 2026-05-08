@@ -1,7 +1,7 @@
+mod dropbox;
 mod terminal;
 mod web_bridge;
 
-use base64::Engine;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -101,13 +101,13 @@ fn read_image_data_url(path: String) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(terminal::TerminalSession::default())
         .manage(web_bridge::WebBridgeManager::default())
         .invoke_handler(tauri::generate_handler![
             default_local_root,
             parent_directory,
             list_directory,
-            read_image_data_url,
             terminal::terminal_spawn,
             terminal::terminal_write,
             terminal::terminal_resize,
@@ -122,4 +122,124 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn is_supported_image_accepts_known_extensions() {
+        for ext in ["jpg", "jpeg", "png", "gif", "webp", "bmp"] {
+            let p = PathBuf::from(format!("/x/y.{ext}"));
+            assert!(is_supported_image(&p), "expected support for .{ext}");
+        }
+    }
+
+    #[test]
+    fn is_supported_image_is_case_insensitive() {
+        assert!(is_supported_image(&PathBuf::from("/p/IMG.JPG")));
+        assert!(is_supported_image(&PathBuf::from("/p/x.PnG")));
+    }
+
+    #[test]
+    fn is_supported_image_rejects_other_formats() {
+        assert!(!is_supported_image(&PathBuf::from("/p/x.tiff")));
+        assert!(!is_supported_image(&PathBuf::from("/p/x.mp4")));
+        assert!(!is_supported_image(&PathBuf::from("/p/x.txt")));
+    }
+
+    #[test]
+    fn is_supported_image_rejects_extensionless() {
+        assert!(!is_supported_image(&PathBuf::from("/p/README")));
+        assert!(!is_supported_image(&PathBuf::from("")));
+    }
+
+    #[test]
+    fn parent_directory_returns_parent_of_normal_path() {
+        assert_eq!(
+            parent_directory("/foo/bar".into()),
+            Some("/foo".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_directory_of_root_is_none() {
+        assert_eq!(parent_directory("/".into()), None);
+    }
+
+    #[test]
+    fn parent_directory_handles_empty_and_whitespace() {
+        assert_eq!(parent_directory("".into()), None);
+        assert_eq!(parent_directory("   ".into()), None);
+    }
+
+    #[test]
+    fn parent_directory_trims_input() {
+        assert_eq!(
+            parent_directory("  /foo/bar  ".into()),
+            Some("/foo".to_string())
+        );
+    }
+
+    #[test]
+    fn list_directory_rejects_empty_path() {
+        let err = list_directory("".into()).unwrap_err();
+        assert_eq!(err, "Path is empty");
+    }
+
+    #[test]
+    fn list_directory_rejects_non_directory() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("a.txt");
+        fs::write(&file_path, b"hi").unwrap();
+        let err = list_directory(file_path.to_string_lossy().into_owned()).unwrap_err();
+        assert!(err.starts_with("Not a directory"), "got: {err}");
+    }
+
+    #[test]
+    fn list_directory_rejects_nonexistent_path() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        let err = list_directory(missing.to_string_lossy().into_owned()).unwrap_err();
+        assert!(err.starts_with("Not a directory"), "got: {err}");
+    }
+
+    #[test]
+    fn list_directory_returns_sorted_entries_dirs_first() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("zeta")).unwrap();
+        fs::create_dir(dir.path().join("Alpha")).unwrap();
+        fs::write(dir.path().join("readme.txt"), b"x").unwrap();
+        fs::write(dir.path().join("BETA.png"), b"x").unwrap();
+
+        let entries = list_directory(dir.path().to_string_lossy().into_owned()).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["Alpha", "zeta", "BETA.png", "readme.txt"]);
+
+        assert!(entries[0].is_directory);
+        assert!(entries[1].is_directory);
+        assert!(!entries[2].is_directory);
+        assert!(!entries[3].is_directory);
+    }
+
+    #[test]
+    fn list_directory_returns_empty_vec_for_empty_dir() {
+        let dir = tempdir().unwrap();
+        let entries = list_directory(dir.path().to_string_lossy().into_owned()).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn list_directory_paths_are_absolute_strings() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.png"), b"x").unwrap();
+        let entries = list_directory(dir.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].path.ends_with("a.png"));
+        assert!(entries[0].path.contains(&*dir.path().to_string_lossy()));
+    }
 }
