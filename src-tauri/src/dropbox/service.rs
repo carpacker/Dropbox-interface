@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::Client;
 use serde_json::json;
@@ -80,12 +80,23 @@ pub struct DropboxService {
 impl DropboxService {
     pub fn new(store: Arc<dyn TokenStore>, app_key: impl Into<String>) -> Self {
         Self {
-            http: Client::new(),
+            http: Self::build_http_client(),
             store,
             clock: Arc::new(SystemClock),
             endpoints: ApiEndpoints::default(),
             app_key: app_key.into(),
         }
+    }
+
+    /// HTTP client with explicit, conservative timeouts so a hung Dropbox
+    /// connection can't lock up a worker indefinitely.
+    fn build_http_client() -> Client {
+        Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(120))
+            .pool_idle_timeout(Duration::from_secs(60))
+            .build()
+            .expect("static reqwest client config is valid")
     }
 
     /// Replace pieces of the service for tests.
@@ -97,7 +108,7 @@ impl DropboxService {
         app_key: impl Into<String>,
     ) -> Self {
         Self {
-            http: Client::new(),
+            http: Self::build_http_client(),
             store,
             clock,
             endpoints,

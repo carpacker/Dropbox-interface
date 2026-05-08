@@ -39,7 +39,7 @@ pub fn build_authorize_url(req: &AuthorizeRequest<'_>) -> Url {
 
 /// Token response from Dropbox /oauth2/token (matches both the initial
 /// authorization-code exchange and a refresh-token exchange).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[allow(dead_code)] // token_type / scope kept for diagnostics
 pub struct TokenResponse {
     pub access_token: String,
@@ -55,6 +55,24 @@ pub struct TokenResponse {
     pub account_id: Option<String>,
     #[serde(default)]
     pub scope: Option<String>,
+}
+
+/// Hand-written `Debug` mirrors `StoredTokens` to keep raw bearer / refresh
+/// values out of any panic message or `dbg!` call.
+impl std::fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_deref().map(|_| "<redacted>"),
+            )
+            .field("expires_in", &self.expires_in)
+            .field("token_type", &self.token_type)
+            .field("account_id", &self.account_id)
+            .field("scope", &self.scope)
+            .finish()
+    }
 }
 
 #[cfg(test)]
@@ -170,5 +188,23 @@ mod tests {
         assert_eq!(parsed.access_token, "new");
         assert!(parsed.refresh_token.is_none());
         assert!(parsed.account_id.is_none());
+    }
+
+    #[test]
+    fn token_response_debug_redacts_secrets() {
+        let r = TokenResponse {
+            access_token: "TOTALLY_SECRET_ACCESS".into(),
+            refresh_token: Some("TOTALLY_SECRET_REFRESH".into()),
+            expires_in: 14400,
+            token_type: "bearer".into(),
+            account_id: Some("dbid:42".into()),
+            scope: Some("files.metadata.read".into()),
+        };
+        let dbg = format!("{r:?}");
+        assert!(!dbg.contains("TOTALLY_SECRET_ACCESS"), "{dbg}");
+        assert!(!dbg.contains("TOTALLY_SECRET_REFRESH"), "{dbg}");
+        assert!(dbg.contains("<redacted>"));
+        assert!(dbg.contains("14400"));
+        assert!(dbg.contains("dbid:42"));
     }
 }

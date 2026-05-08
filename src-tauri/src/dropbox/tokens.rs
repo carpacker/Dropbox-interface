@@ -3,13 +3,27 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoredTokens {
     pub access_token: String,
     pub refresh_token: String,
     /// Unix-seconds expiry for the access token.
     pub expires_at: i64,
     pub account_id: String,
+}
+
+/// Hand-written `Debug` so that accidental `dbg!`/`{:?}`/panic messages never
+/// leak the bearer or refresh token. Tests rely on this redaction; do not
+/// switch back to `derive(Debug)` without rewiring those tests.
+impl std::fmt::Debug for StoredTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredTokens")
+            .field("access_token", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .field("account_id", &self.account_id)
+            .finish()
+    }
 }
 
 impl StoredTokens {
@@ -184,5 +198,22 @@ mod tests {
         let store = InMemoryStore::with_tokens(fake_tokens(1));
         store.save(&fake_tokens(2)).unwrap();
         assert_eq!(store.load().unwrap().unwrap().expires_at, 2);
+    }
+
+    #[test]
+    fn debug_impl_redacts_access_and_refresh_tokens() {
+        let t = StoredTokens {
+            access_token: "TOTALLY_SECRET_ACCESS".into(),
+            refresh_token: "TOTALLY_SECRET_REFRESH".into(),
+            expires_at: 12345,
+            account_id: "dbid:42".into(),
+        };
+        let dbg = format!("{t:?}");
+        assert!(!dbg.contains("TOTALLY_SECRET_ACCESS"), "{dbg}");
+        assert!(!dbg.contains("TOTALLY_SECRET_REFRESH"), "{dbg}");
+        assert!(dbg.contains("<redacted>"));
+        // Non-secret fields still show through for diagnostics.
+        assert!(dbg.contains("12345"));
+        assert!(dbg.contains("dbid:42"));
     }
 }
