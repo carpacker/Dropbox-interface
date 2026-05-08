@@ -34,6 +34,7 @@ import {
   setNote,
   type NotesByPath,
 } from "@/lib/pipeline-notes";
+import { joinDropboxPath } from "@/lib/dropbox-pipeline-source";
 import { getRecentPipelines, setPinned } from "@/lib/pipeline-recents";
 import {
   dropboxCreateFolder,
@@ -343,7 +344,7 @@ export function PipelineView(props: PipelineViewProps) {
   ) {
     setActionError(null);
     setMovingPaths(new Set([entry.path]));
-    const toPath = joinPath(destFolderPath, entry.name);
+    const toPath = joinDropboxPath(destFolderPath, entry.name);
     try {
       await dropboxMove(entry.path, toPath);
       refreshBucket(sourceBucket, parentFolderOfPath(entry.path));
@@ -379,7 +380,7 @@ export function PipelineView(props: PipelineViewProps) {
 
     const results = await Promise.allSettled(
       entries.map(async (e) => {
-        const toPath = joinPath(destFolderPath, e.name);
+        const toPath = joinDropboxPath(destFolderPath, e.name);
         await dropboxMove(e.path, toPath);
         return {
           fromPath: e.path,
@@ -569,6 +570,7 @@ export function PipelineView(props: PipelineViewProps) {
     fetchedRef.current.add(selectedId);
 
     let cancelled = false;
+    let settled = false;
     setStateListings((prev) => ({
       ...prev,
       [selectedId]: { kind: "loading" },
@@ -576,12 +578,14 @@ export function PipelineView(props: PipelineViewProps) {
     void (async () => {
       try {
         const entries = await dropboxListFolder(folder.path);
+        settled = true;
         if (cancelled) return;
         setStateListings((prev) => ({
           ...prev,
           [selectedId]: { kind: "ready", entries },
         }));
       } catch (e) {
+        settled = true;
         if (cancelled) return;
         // Drop from the in-flight set so a re-select can retry.
         fetchedRef.current.delete(selectedId);
@@ -596,6 +600,14 @@ export function PipelineView(props: PipelineViewProps) {
     })();
     return () => {
       cancelled = true;
+      // If the fetch was still in-flight at unmount, drop the in-flight
+      // marker so a return to this bucket re-fetches instead of
+      // wedging at "Loading…". If the fetch already settled (success
+      // or error), preserve the cache: keep the ref so re-selecting
+      // doesn't issue a redundant API call.
+      if (!settled) {
+        fetchedRef.current.delete(selectedId);
+      }
     };
   }, [selectedId, classification]);
 
@@ -1236,15 +1248,6 @@ function byPath(
 function parentFolderOfPath(p: string): string {
   const i = p.lastIndexOf("/");
   return i <= 0 ? "" : p.substring(0, i);
-}
-
-/**
- * Join a folder path with a basename. Handles the root case (empty
- * folder = "" or "/") and avoids double slashes.
- */
-function joinPath(folder: string, name: string): string {
-  if (folder === "" || folder === "/") return `/${name}`;
-  return `${folder.replace(/\/+$/, "")}/${name}`;
 }
 
 /** Convert a fully-shaped Bucket into the minimal BucketRef discriminator. */

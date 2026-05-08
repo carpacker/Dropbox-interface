@@ -1,5 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
+import { isImageFile } from "./tauri-fs";
+
 /**
  * Dropbox app key, sourced from build-time env. Register your Dropbox app at
  * https://www.dropbox.com/developers/apps and put its **App key** in
@@ -139,22 +141,14 @@ export function dropboxLocalSrc(localPath: string): string {
   return convertFileSrc(localPath);
 }
 
-/** Common image extensions; matches the Photos app's set. */
-const IMAGE_EXTENSIONS = [
-  ".jpg",
-  ".jpeg",
-  ".png",
-  ".gif",
-  ".webp",
-  ".bmp",
-] as const;
-
 export function isDropboxImage(entry: DropboxEntry): boolean {
   if (entry.kind !== "file") {
     return false;
   }
-  const lowered = entry.name.toLowerCase();
-  return IMAGE_EXTENSIONS.some((ext) => lowered.endsWith(ext));
+  // Reuses the same extension list the local Photos app uses, imported
+  // lazily to keep this module's dependency graph local-FS-aware
+  // without bloating it.
+  return isImageFile(entry.name);
 }
 
 /**
