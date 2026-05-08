@@ -1,4 +1,12 @@
-import { ChevronUp, Folder, ImageIcon, RefreshCw, X } from "lucide-react";
+import {
+  ChevronUp,
+  Folder,
+  ImageIcon,
+  Pause,
+  Play,
+  RefreshCw,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -20,6 +28,15 @@ import {
   type FsEntry,
 } from "@/lib/tauri-fs";
 
+/**
+ * How many image columns the thumbnail grid renders. Matches the Tailwind
+ * `lg:grid-cols-5` breakpoint we hit on a typical desktop layout, and
+ * drives the up/down arrow-key navigation step.
+ */
+const GRID_COLUMNS = 5;
+/** Slideshow auto-advance interval in milliseconds. */
+const SLIDESHOW_INTERVAL_MS = 2_200;
+
 export function PhotosApp() {
   const [currentPath, setCurrentPath] = useState("");
   const [pathInput, setPathInput] = useState("");
@@ -27,6 +44,7 @@ export function PhotosApp() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [isSlideshowPlaying, setIsSlideshowPlaying] = useState(false);
 
   const loadPath = useCallback(async (path: string) => {
     const nextPath = path.trim();
@@ -36,6 +54,7 @@ export function PhotosApp() {
     setLoading(true);
     setError(null);
     setSelectedPath(null);
+    setIsSlideshowPlaying(false);
     try {
       const rows = await listDirectory(nextPath);
       setEntries(rows);
@@ -78,18 +97,106 @@ export function PhotosApp() {
     }
   }
 
-  useEffect(() => {
-    if (!selectedPath) {
-      return;
+  const selectedIndex = useMemo(
+    () =>
+      selectedPath
+        ? imageEntries.findIndex((entry) => entry.path === selectedPath)
+        : -1,
+    [imageEntries, selectedPath],
+  );
+
+  const advanceBy = useCallback(
+    (delta: number) => {
+      if (imageEntries.length === 0) return;
+      const base = selectedIndex >= 0 ? selectedIndex : 0;
+      const next = Math.max(
+        0,
+        Math.min(imageEntries.length - 1, base + delta),
+      );
+      setSelectedPath(imageEntries[next].path);
+    },
+    [imageEntries, selectedIndex],
+  );
+
+  const stopSlideshow = useCallback(() => setIsSlideshowPlaying(false), []);
+
+  const toggleSlideshow = useCallback(() => {
+    if (imageEntries.length === 0) return;
+    if (selectedIndex < 0 && imageEntries[0]) {
+      setSelectedPath(imageEntries[0].path);
     }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        setSelectedPath(null);
+    setIsSlideshowPlaying((prev) => !prev);
+  }, [imageEntries, selectedIndex]);
+
+  // Keyboard navigation:
+  //   Esc       — stop slideshow / close lightbox
+  //   Space     — play/pause slideshow
+  //   ← / →     — prev/next image
+  //   ↑ / ↓     — prev/next *row* (uses GRID_COLUMNS)
+  // Only active while the lightbox is open or a slideshow is playing.
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      const tag = (event.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+      if (event.key === "Escape") {
+        if (isSlideshowPlaying) {
+          event.preventDefault();
+          stopSlideshow();
+        } else if (selectedPath) {
+          setSelectedPath(null);
+        }
+        return;
+      }
+
+      if (event.key === " ") {
+        if (imageEntries.length === 0) return;
+        event.preventDefault();
+        toggleSlideshow();
+        return;
+      }
+
+      // Arrow keys only react when the lightbox is open and slideshow
+      // isn't auto-driving the index; otherwise they'd fight the timer.
+      if (!selectedPath || isSlideshowPlaying) return;
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        advanceBy(1);
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        advanceBy(-1);
+      } else if (event.key === "ArrowDown") {
+        event.preventDefault();
+        advanceBy(GRID_COLUMNS);
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        advanceBy(-GRID_COLUMNS);
       }
     }
+
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedPath]);
+  }, [
+    advanceBy,
+    imageEntries.length,
+    isSlideshowPlaying,
+    selectedPath,
+    stopSlideshow,
+    toggleSlideshow,
+  ]);
+
+  // Slideshow timer. Advances `selectedPath` once per
+  // SLIDESHOW_INTERVAL_MS, wrapping at the end. Stops automatically when
+  // the user changes folders (loadPath clears isSlideshowPlaying).
+  useEffect(() => {
+    if (!isSlideshowPlaying || imageEntries.length === 0) return;
+    const id = window.setInterval(() => {
+      const current = selectedIndex >= 0 ? selectedIndex : 0;
+      const next = (current + 1) % imageEntries.length;
+      setSelectedPath(imageEntries[next].path);
+    }, SLIDESHOW_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [imageEntries, isSlideshowPlaying, selectedIndex]);
 
   return (
     <Card className="flex flex-col gap-0 overflow-hidden">
@@ -226,21 +333,51 @@ export function PhotosApp() {
             className="relative max-h-full max-w-full"
             onClick={(e) => e.stopPropagation()}
           >
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              onClick={() => setSelectedPath(null)}
-              className="absolute right-2 top-2 z-10"
-              aria-label="Close preview"
-            >
-              <X data-icon="inline-start" />
-            </Button>
+            <div className="absolute right-2 top-2 z-10 flex gap-1">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={toggleSlideshow}
+                aria-label={
+                  isSlideshowPlaying ? "Pause slideshow" : "Play slideshow"
+                }
+                aria-pressed={isSlideshowPlaying ? "true" : "false"}
+                title={
+                  isSlideshowPlaying
+                    ? "Pause slideshow (Space)"
+                    : "Play slideshow (Space)"
+                }
+              >
+                {isSlideshowPlaying ? (
+                  <Pause data-icon="inline-start" />
+                ) : (
+                  <Play data-icon="inline-start" />
+                )}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => setSelectedPath(null)}
+                aria-label="Close preview"
+              >
+                <X data-icon="inline-start" />
+              </Button>
+            </div>
             <img
               src={imageSrc(selectedPath)}
               alt={selectedPath}
               className="max-h-[85vh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
             />
+            <p className="mt-2 text-center text-xs text-muted-foreground">
+              {selectedIndex >= 0
+                ? `${selectedIndex + 1} / ${imageEntries.length}`
+                : ""}
+              <span className="ml-3">
+                ← / → navigate · Space play/pause · Esc close
+              </span>
+            </p>
           </div>
         </div>
       ) : null}

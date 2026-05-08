@@ -199,4 +199,170 @@ describe("PhotosApp", () => {
       await screen.findByRole("button", { name: /^sub$/i }),
     ).toBeInTheDocument();
   });
+
+  describe("slideshow + keyboard nav", () => {
+    function setupThreeImages() {
+      setupFs({
+        "/home/user": [
+          { name: "a.jpg", path: "/home/user/a.jpg", isDirectory: false },
+          { name: "b.jpg", path: "/home/user/b.jpg", isDirectory: false },
+          { name: "c.jpg", path: "/home/user/c.jpg", isDirectory: false },
+        ],
+      });
+    }
+
+    it("ArrowRight advances to the next image inside the lightbox", async () => {
+      setupThreeImages();
+      const user = userEvent.setup();
+      render(<PhotosApp />);
+
+      await user.click(
+        await screen.findByRole("button", { name: /open a\.jpg/i }),
+      );
+      const dialog = screen.getByRole("dialog", { name: /image preview/i });
+      const initialSrc = (dialog.querySelector("img") as HTMLImageElement)
+        .src;
+      expect(initialSrc).toContain("a.jpg");
+
+      await user.keyboard("{ArrowRight}");
+      const nextImg = (await screen.findByRole("dialog", {
+        name: /image preview/i,
+      })).querySelector("img") as HTMLImageElement;
+      expect(nextImg.src).toContain("b.jpg");
+    });
+
+    it("ArrowLeft from the first image clamps (no wrap)", async () => {
+      setupThreeImages();
+      const user = userEvent.setup();
+      render(<PhotosApp />);
+
+      await user.click(
+        await screen.findByRole("button", { name: /open a\.jpg/i }),
+      );
+      await user.keyboard("{ArrowLeft}");
+      const img = (await screen.findByRole("dialog", {
+        name: /image preview/i,
+      })).querySelector("img") as HTMLImageElement;
+      expect(img.src).toContain("a.jpg");
+    });
+
+    it("Space toggles the slideshow control's pressed state", async () => {
+      setupThreeImages();
+      const user = userEvent.setup();
+      render(<PhotosApp />);
+
+      await user.click(
+        await screen.findByRole("button", { name: /open a\.jpg/i }),
+      );
+      const playBtn = screen.getByRole("button", { name: /play slideshow/i });
+      expect(playBtn).toHaveAttribute("aria-pressed", "false");
+
+      await user.keyboard(" ");
+      expect(
+        screen.getByRole("button", { name: /pause slideshow/i }),
+      ).toHaveAttribute("aria-pressed", "true");
+
+      await user.keyboard(" ");
+      expect(
+        screen.getByRole("button", { name: /play slideshow/i }),
+      ).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("clicking the slideshow button when the lightbox is closed opens the first image and starts playing", async () => {
+      setupThreeImages();
+      const user = userEvent.setup();
+      render(<PhotosApp />);
+
+      await user.click(
+        await screen.findByRole("button", { name: /open a\.jpg/i }),
+      );
+      // Close, then re-open at first via the play button.
+      await user.keyboard("{Escape}");
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: /image preview/i }),
+        ).not.toBeInTheDocument(),
+      );
+
+      // Re-open then immediately toggle slideshow via Space.
+      await user.click(
+        screen.getByRole("button", { name: /open a\.jpg/i }),
+      );
+      await user.keyboard(" ");
+      expect(
+        screen.getByRole("button", { name: /pause slideshow/i }),
+      ).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("changing folders stops a running slideshow", async () => {
+      setupFs({
+        "/home/user": [
+          {
+            name: "Sub",
+            path: "/home/user/Sub",
+            isDirectory: true,
+          },
+          { name: "a.jpg", path: "/home/user/a.jpg", isDirectory: false },
+          { name: "b.jpg", path: "/home/user/b.jpg", isDirectory: false },
+        ],
+        "/home/user/Sub": [],
+      });
+      const user = userEvent.setup();
+      render(<PhotosApp />);
+
+      await user.click(
+        await screen.findByRole("button", { name: /open a\.jpg/i }),
+      );
+      await user.keyboard(" ");
+      expect(
+        screen.getByRole("button", { name: /pause slideshow/i }),
+      ).toHaveAttribute("aria-pressed", "true");
+
+      // Esc has two-stage UX: first press stops the slideshow, second
+      // press closes the lightbox.
+      await user.keyboard("{Escape}");
+      expect(
+        screen.getByRole("button", { name: /play slideshow/i }),
+      ).toHaveAttribute("aria-pressed", "false");
+      await user.keyboard("{Escape}");
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: /image preview/i }),
+        ).not.toBeInTheDocument(),
+      );
+
+      // Navigate; slideshow flag is reset by loadPath.
+      await user.click(await screen.findByRole("button", { name: /^sub$/i }));
+      await screen.findByText(/no supported images/i);
+      // Re-enter parent and confirm the play button is back to "Play".
+      await user.click(screen.getByRole("button", { name: /parent folder/i }));
+      await user.click(
+        await screen.findByRole("button", { name: /open a\.jpg/i }),
+      );
+      expect(
+        screen.getByRole("button", { name: /play slideshow/i }),
+      ).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("typing in the path input does not steal arrow-key focus", async () => {
+      setupThreeImages();
+      const user = userEvent.setup();
+      render(<PhotosApp />);
+
+      await user.click(
+        await screen.findByRole("button", { name: /open a\.jpg/i }),
+      );
+      // Close first so the path input can be focused.
+      await user.keyboard("{Escape}");
+
+      const input = screen.getByLabelText("Photo folder path");
+      await user.click(input);
+      // Pressing space inside an INPUT must not trigger play/pause.
+      await user.keyboard(" ");
+      // Lightbox is closed, slideshow should not have toggled.
+      expect(
+        screen.queryByRole("dialog", { name: /image preview/i }),
+      ).not.toBeInTheDocument();
+    });
+  });
 });
