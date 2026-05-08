@@ -7,7 +7,7 @@ import {
   addRecentPipeline,
   clearRecentPipelines,
 } from "@/lib/pipeline-recents";
-import App, { formatRelativeTime } from "./App";
+import App from "./App";
 
 vi.mock("@/components/desktop-terminal", () => ({
   DesktopTerminal: () => <div data-testid="terminal-stub">stub</div>,
@@ -190,24 +190,4 @@ describe("App — Recent pipelines card", () => {
   });
 });
 
-describe("formatRelativeTime", () => {
-  it.each([
-    [0, "just now"],
-    [10_000, "just now"],
-    [60_000, "1m ago"],
-    [120_000, "2m ago"],
-    [60 * 60 * 1000, "1h ago"],
-    [3 * 60 * 60 * 1000, "3h ago"],
-    [24 * 60 * 60 * 1000, "1d ago"],
-    [10 * 24 * 60 * 60 * 1000, "10d ago"],
-    [40 * 24 * 60 * 60 * 1000, "1mo ago"],
-    [365 * 24 * 60 * 60 * 1000 + 1, "1y ago"],
-  ])("delta %i ms → %s", (delta, expected) => {
-    const now = 1_000_000_000_000;
-    expect(formatRelativeTime(now - delta, now)).toBe(expected);
-  });
-
-  it("clamps negative deltas to 'just now'", () => {
-    expect(formatRelativeTime(2000, 1000)).toBe("just now");
-  });
-});
+// formatRelativeTime tests live in src/lib/time-format.test.ts now.

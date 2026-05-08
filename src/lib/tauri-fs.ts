@@ -4,6 +4,10 @@ export type FsEntry = {
   name: string;
   path: string;
   isDirectory: boolean;
+  /** Size in bytes; null for directories or platforms without metadata. */
+  size: number | null;
+  /** Last-modified time as unix *seconds*; null when unavailable. */
+  modified: number | null;
 };
 
 export const IMAGE_EXTENSIONS = [

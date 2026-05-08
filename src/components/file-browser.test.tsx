@@ -5,7 +5,13 @@ import { describe, expect, it, vi } from "vitest";
 import { setInvokeHandler } from "@/test/tauri-core-mock";
 import { FileBrowser } from "./file-browser";
 
-type Entry = { name: string; path: string; isDirectory: boolean };
+type Entry = {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  size?: number | null;
+  modified?: number | null;
+};
 
 function setupFs(map: Record<string, Entry[]>, root = "/home/user") {
   setInvokeHandler("default_local_root", () => root);
@@ -169,5 +175,45 @@ describe("FileBrowser", () => {
     expect(
       within(region).getByRole("button", { name: /refresh listing/i }),
     ).toBeDisabled();
+  });
+
+  it("renders size + relative-time metadata next to file names when available", async () => {
+    setupFs({
+      "/home/user": [
+        { name: "Sub", path: "/home/user/Sub", isDirectory: true },
+        {
+          name: "doc.txt",
+          path: "/home/user/doc.txt",
+          isDirectory: false,
+          size: 2048,
+          modified: Math.floor(Date.now() / 1000) - 60 * 60, // 1h ago
+        },
+      ],
+    });
+    render(<FileBrowser />);
+
+    const docRow = await screen.findByRole("button", { name: /doc\.txt/i });
+    expect(docRow).toHaveTextContent("2.0 KB");
+    expect(docRow).toHaveTextContent(/1h ago/);
+
+    // Folder doesn't get a size badge.
+    const subRow = await screen.findByRole("button", { name: /^sub$/i });
+    expect(subRow).not.toHaveTextContent(/KB|MB|B/);
+  });
+
+  it("shows the SortDropdown and persists the user's choice", async () => {
+    setupFs({ "/home/user": [] });
+    const user = userEvent.setup();
+    render(<FileBrowser />);
+
+    // Toggle direction via the ascending → descending button.
+    await screen.findByText(/this folder is empty/i);
+    await user.click(
+      screen.getByRole("button", { name: /sort ascending/i }),
+    );
+    const stored = JSON.parse(
+      localStorage.getItem("dropbox-interface:sort-preference-v1")!,
+    );
+    expect(stored).toEqual({ key: "name", direction: "desc" });
   });
 });

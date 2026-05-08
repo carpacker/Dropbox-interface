@@ -76,8 +76,14 @@ describe("parentDirectory", () => {
 describe("listDirectory", () => {
   it("returns entries from invoke", async () => {
     const rows: FsEntry[] = [
-      { name: "docs", path: "/u/docs", isDirectory: true },
-      { name: "a.png", path: "/u/a.png", isDirectory: false },
+      { name: "docs", path: "/u/docs", isDirectory: true, size: null, modified: null },
+      {
+        name: "a.png",
+        path: "/u/a.png",
+        isDirectory: false,
+        size: 1234,
+        modified: 1_700_000_000,
+      },
     ];
     setInvokeHandler("list_directory", (args) => {
       expect(args).toEqual({ path: "/u" });
