@@ -12,21 +12,31 @@
 import {
   AlertTriangle,
   FolderPlus,
+  Keyboard,
+  LayoutGrid,
+  List,
   Pin,
   PinOff,
   Undo2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
   classifyParentListing,
+  nextState,
   type EntryHandle,
 } from "@/lib/pipeline/pipeline";
-import { nextState } from "@/lib/pipeline/pipeline";
 import type { PipelineConfig, PipelineState } from "@/lib/pipeline/schema";
 import {
   getAllNotes,
@@ -50,9 +60,11 @@ import {
   dropboxEntryToSortable,
   dropboxListFolder,
   dropboxMove,
+  isDropboxImage,
   type DropboxEntry,
 } from "@/lib/tauri-dropbox";
 import { cn } from "@/lib/utils";
+import { getViewMode, setViewMode, type ViewMode } from "@/lib/view-mode";
 
 const INBOX_ID = "__inbox__";
 
@@ -125,6 +137,36 @@ type PipelineViewProps = {
       };
     },
   ) => ReactNode;
+  /**
+   * Optional gallery-tile renderer. When provided, the pipeline view
+   * exposes a List/Gallery toggle and switches the bucket panel to a
+   * thumbnail grid in gallery mode. When absent, only the list view is
+   * available and the toggle is hidden — keeps the seam optional.
+   */
+  renderEntryTile?: (
+    entry: DropboxEntry,
+    opts: {
+      saving: boolean;
+      onPreview: () => void;
+      onSave: () => void;
+      onOpenFolder: (path: string) => void;
+      promote?: {
+        targetStateName: string;
+        inFlight: boolean;
+        onClick: () => void;
+      };
+      select?: {
+        selected: boolean;
+        onToggle: () => void;
+      };
+      note?: {
+        hasNote: boolean;
+        onClick: () => void;
+      };
+      /** Mirrored to data-focused for keyboard nav highlight. */
+      focused: boolean;
+    },
+  ) => ReactNode;
 };
 
 /**
@@ -166,7 +208,26 @@ export function PipelineView(props: PipelineViewProps) {
     onSaveFile,
     savingPath,
     renderEntryRow,
+    renderEntryTile,
   } = props;
+
+  // View mode is per-pipeline so an image-heavy pipeline can stay in
+  // gallery while a doc-heavy one stays in list. Hidden entirely when
+  // the caller didn't supply a tile renderer.
+  const galleryAvailable = renderEntryTile !== undefined;
+  const [viewMode, setViewModeState] = useState<ViewMode>(() =>
+    galleryAvailable ? getViewMode(parentPath) : "list",
+  );
+  useEffect(() => {
+    setViewModeState(galleryAvailable ? getViewMode(parentPath) : "list");
+  }, [parentPath, galleryAvailable]);
+  function updateViewMode(next: ViewMode) {
+    if (!galleryAvailable && next !== "list") return;
+    setViewModeState(next);
+    if (galleryAvailable) {
+      setViewMode(parentPath, next);
+    }
+  }
 
   // EntryHandle adapters for the pure classification helper.
   const parentHandles: EntryHandle[] = useMemo(
@@ -694,19 +755,54 @@ export function PipelineView(props: PipelineViewProps) {
     }));
   }
 
-  const contents = renderBucketContents({
-    bucket: selectedBucket,
-    classification,
-    parentEntries,
-    stateListings,
-    onPreviewImage,
-    onSaveFile,
-    savingPath,
-    onNavigateInto,
-    renderEntryRow,
-    promoteContext,
-    movingPaths,
-    onPromote: (entry) => {
+  // Pre-compute the visible entry list for the active bucket so the
+  // keyboard handler and the renderer agree on indexing.
+  const activeFilter = filtersByBucket[selectedId] ?? "";
+  const bucketStatus = useMemo<BucketStatus>(() => {
+    if (!selectedBucket) return { kind: "missing" };
+    if (selectedBucket.kind === "inbox") {
+      return {
+        kind: "ready",
+        entries: byPath(parentEntries, classification.inbox),
+      };
+    }
+    const listing = stateListings[selectedBucket.id];
+    if (!listing || listing.kind === "loading") return { kind: "loading" };
+    if (listing.kind === "error")
+      return { kind: "error", message: listing.message };
+    return { kind: "ready", entries: listing.entries };
+  }, [selectedBucket, parentEntries, classification.inbox, stateListings]);
+
+  const visibleEntries = useMemo<DropboxEntry[]>(() => {
+    if (bucketStatus.kind !== "ready") return [];
+    const sorted = sortEntries(bucketStatus.entries, sort, {
+      toSortable: dropboxEntryToSortable,
+    });
+    return filterByQuery(sorted, activeFilter) as DropboxEntry[];
+  }, [bucketStatus, sort, activeFilter]);
+
+  // Keyboard-nav focus state. Lives at the component level (not inside
+  // the renderer) because the panel-level key handler needs to know
+  // which entry to act on. Reset/clamped whenever the visible list
+  // shrinks under it (filter typed, listing reloaded, bucket switch).
+  const [focusedIndex, setFocusedIndex] = useState(0);
+  useEffect(() => {
+    setFocusedIndex(0);
+  }, [selectedId, parentPath]);
+  useEffect(() => {
+    setFocusedIndex((idx) => {
+      if (visibleEntries.length === 0) return 0;
+      if (idx >= visibleEntries.length) return visibleEntries.length - 1;
+      if (idx < 0) return 0;
+      return idx;
+    });
+  }, [visibleEntries.length]);
+
+  // Help dialog ("?" key, Keyboard icon button). Local-only state.
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  const onPromoteEntry = useCallback(
+    (entry: DropboxEntry) => {
       if (!promoteContext) return;
       void performMove(
         entry,
@@ -715,6 +811,155 @@ export function PipelineView(props: PipelineViewProps) {
         promoteContext.destFolderPath,
       );
     },
+    // performMove is stable for the life of the component (defined in
+    // closure scope but doesn't read changing props/state via deps that
+    // would invalidate this callback in practice).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [promoteContext],
+  );
+
+  const onPanelKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      // Ignore key presses originating inside text inputs, textareas,
+      // or contenteditable nodes — the filter chip and note editor live
+      // inside the same DOM tree and would steal letter keys otherwise.
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      const total = visibleEntries.length;
+
+      switch (e.key) {
+        case "j":
+        case "ArrowDown": {
+          if (total === 0) return;
+          e.preventDefault();
+          setFocusedIndex((i) => Math.min(total - 1, i + 1));
+          return;
+        }
+        case "k":
+        case "ArrowUp": {
+          if (total === 0) return;
+          e.preventDefault();
+          setFocusedIndex((i) => Math.max(0, i - 1));
+          return;
+        }
+        case "g": {
+          if (total === 0) return;
+          e.preventDefault();
+          setFocusedIndex(0);
+          return;
+        }
+        case "G": {
+          if (total === 0) return;
+          e.preventDefault();
+          setFocusedIndex(total - 1);
+          return;
+        }
+        case "Enter": {
+          const focused = visibleEntries[focusedIndex];
+          if (!focused) return;
+          e.preventDefault();
+          if (focused.kind === "folder") {
+            onNavigateInto(focused.path);
+          } else if (isDropboxImage(focused)) {
+            onPreviewImage(focused);
+          }
+          return;
+        }
+        case " ": {
+          const focused = visibleEntries[focusedIndex];
+          if (!focused) return;
+          e.preventDefault();
+          toggleSelect(focused.path);
+          return;
+        }
+        case "p": {
+          if (!promoteContext) return;
+          e.preventDefault();
+          // Bulk-promote when there's a multi-row selection; otherwise
+          // promote the focused row only.
+          if (selectedPaths.size > 0) {
+            const picked = visibleEntries.filter((entry) =>
+              selectedPaths.has(entry.path),
+            );
+            if (picked.length === 0) return;
+            void performBulkMove(
+              picked.map((entry) => ({ path: entry.path, name: entry.name })),
+              promoteContext.sourceBucket,
+              promoteContext.destBucket,
+              promoteContext.destFolderPath,
+            );
+            return;
+          }
+          const focused = visibleEntries[focusedIndex];
+          if (!focused) return;
+          onPromoteEntry(focused);
+          return;
+        }
+        case "Escape": {
+          // Unwind: filter → selection → focus. Matches the user's
+          // mental "back-out" sequence.
+          if (activeFilter !== "") {
+            e.preventDefault();
+            setFiltersByBucket((prev) => ({ ...prev, [selectedId]: "" }));
+            return;
+          }
+          if (selectedPaths.size > 0) {
+            e.preventDefault();
+            clearSelection();
+            return;
+          }
+          return;
+        }
+        case "?": {
+          e.preventDefault();
+          setHelpOpen(true);
+          return;
+        }
+        default:
+          return;
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      visibleEntries,
+      focusedIndex,
+      promoteContext,
+      selectedPaths,
+      activeFilter,
+      selectedId,
+      onPromoteEntry,
+      onNavigateInto,
+      onPreviewImage,
+    ],
+  );
+
+  const contents = renderBucketContents({
+    bucket: selectedBucket,
+    bucketStatus,
+    visibleEntries,
+    activeFilter,
+    viewMode,
+    focusedIndex,
+    onPreviewImage,
+    onSaveFile,
+    savingPath,
+    onNavigateInto,
+    renderEntryRow,
+    renderEntryTile,
+    promoteContext,
+    movingPaths,
+    onPromote: onPromoteEntry,
     sourceBucketRef: selectedBucket
       ? bucketAsRef(selectedBucket)
       : { kind: "inbox" },
@@ -725,8 +970,6 @@ export function PipelineView(props: PipelineViewProps) {
     onToggleSelect: toggleSelect,
     notesByPath,
     onOpenNote: openNoteEditor,
-    sort,
-    filter: filtersByBucket[selectedId] ?? "",
   });
 
   const missing = classification.missing;
@@ -873,6 +1116,9 @@ export function PipelineView(props: PipelineViewProps) {
       </div>
 
       <div className="flex flex-wrap items-center justify-end gap-2">
+        {galleryAvailable ? (
+          <ViewModeToggle value={viewMode} onChange={updateViewMode} />
+        ) : null}
         <FilterChip
           value={filtersByBucket[selectedId] ?? ""}
           onChange={(next) =>
@@ -882,6 +1128,16 @@ export function PipelineView(props: PipelineViewProps) {
           placeholder="Filter…"
         />
         <SortDropdown value={sort} onChange={updateSort} compact />
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          onClick={() => setHelpOpen(true)}
+          aria-label="Keyboard shortcuts"
+          title="Keyboard shortcuts (?)"
+        >
+          <Keyboard data-icon="inline-start" />
+        </Button>
       </div>
 
       <Separator />
@@ -903,15 +1159,7 @@ export function PipelineView(props: PipelineViewProps) {
                 disabled={movingPaths.size > 0}
                 onClick={() => {
                   if (!promoteContext) return;
-                  // Resolve selected paths to entries from the current bucket's
-                  // listing so we have name (needed to compute toPath).
-                  const entriesNow = currentBucketEntries(
-                    selectedBucket,
-                    classification,
-                    parentEntries,
-                    stateListings,
-                  );
-                  const picked = entriesNow.filter((e) =>
+                  const picked = visibleEntries.filter((e) =>
                     selectedPaths.has(e.path),
                   );
                   void performBulkMove(
@@ -941,6 +1189,9 @@ export function PipelineView(props: PipelineViewProps) {
       <div
         role="tabpanel"
         aria-label={selectedBucket?.name ?? "Pipeline contents"}
+        tabIndex={0}
+        onKeyDown={onPanelKeyDown}
+        className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {contents}
       </div>
@@ -953,6 +1204,128 @@ export function PipelineView(props: PipelineViewProps) {
           onClose={closeNoteEditor}
         />
       ) : null}
+
+      {helpOpen ? (
+        <KeyboardHelpDialog onClose={() => setHelpOpen(false)} />
+      ) : null}
+    </div>
+  );
+}
+
+function ViewModeToggle({
+  value,
+  onChange,
+}: {
+  value: ViewMode;
+  onChange: (next: ViewMode) => void;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label="View mode"
+      className="inline-flex h-8 items-center overflow-hidden rounded-md border"
+    >
+      <button
+        type="button"
+        aria-label="List view"
+        aria-pressed={value === "list"}
+        onClick={() => onChange("list")}
+        className={cn(
+          "flex h-8 items-center gap-1 px-2 text-xs",
+          value === "list"
+            ? "bg-foreground text-background"
+            : "bg-background text-foreground hover:bg-muted",
+        )}
+      >
+        <List className="size-3.5" aria-hidden="true" />
+        <span className="hidden sm:inline">List</span>
+      </button>
+      <button
+        type="button"
+        aria-label="Gallery view"
+        aria-pressed={value === "gallery"}
+        onClick={() => onChange("gallery")}
+        className={cn(
+          "flex h-8 items-center gap-1 border-l px-2 text-xs",
+          value === "gallery"
+            ? "bg-foreground text-background"
+            : "bg-background text-foreground hover:bg-muted",
+        )}
+      >
+        <LayoutGrid className="size-3.5" aria-hidden="true" />
+        <span className="hidden sm:inline">Gallery</span>
+      </button>
+    </div>
+  );
+}
+
+function KeyboardHelpDialog({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const rows: Array<[string, string]> = [
+    ["j  /  ↓", "Move focus down"],
+    ["k  /  ↑", "Move focus up"],
+    ["g  /  G", "Jump to top / bottom"],
+    ["Enter", "Preview image · open folder"],
+    ["Space", "Toggle selection on focused row"],
+    ["p", "Promote selected (or focused) item(s)"],
+    ["Esc", "Clear filter, then clear selection"],
+    ["?", "Open this help"],
+  ];
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Keyboard shortcuts"
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur"
+    >
+      <div
+        className="flex w-full max-w-md flex-col gap-3 rounded-lg border bg-card p-4 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-sm font-medium">Keyboard shortcuts</p>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            aria-label="Close keyboard shortcuts"
+          >
+            <X data-icon="inline-start" />
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Click into the bucket panel first so it has focus, then use:
+        </p>
+        <ul className="flex flex-col gap-1.5 text-sm">
+          {rows.map(([keys, action]) => (
+            <li
+              key={keys}
+              className="flex items-center justify-between gap-3"
+            >
+              <kbd className="rounded border bg-muted px-2 py-0.5 font-mono text-xs">
+                {keys}
+              </kbd>
+              <span className="text-right text-xs text-muted-foreground">
+                {action}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <div className="flex justify-end">
+          <Button type="button" variant="outline" size="sm" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1031,28 +1404,6 @@ function NoteEditorModal({
       </div>
     </div>
   );
-}
-
-/**
- * Resolve a bucket to the DropboxEntry list that backs it. Inbox →
- * the inbox classification slice; state → the cached state listing.
- * Returns [] when the bucket isn't loaded or doesn't apply.
- */
-function currentBucketEntries(
-  bucket: Bucket | undefined,
-  classification: ReturnType<typeof classifyParentListing>,
-  parentEntries: DropboxEntry[],
-  stateListings: Record<string, StateListing>,
-): DropboxEntry[] {
-  if (!bucket) return [];
-  if (bucket.kind === "inbox") {
-    const map = new Map(parentEntries.map((e) => [e.path, e]));
-    return classification.inbox
-      .map((h) => map.get(h.path))
-      .filter((e): e is DropboxEntry => e !== undefined);
-  }
-  const listing = stateListings[bucket.id];
-  return listing && listing.kind === "ready" ? listing.entries : [];
 }
 
 function BucketChip({
@@ -1136,16 +1487,26 @@ type PromoteContext = {
   destFolderPath: string;
 };
 
+type BucketStatus =
+  | { kind: "missing" }
+  | { kind: "loading" }
+  | { kind: "error"; message: string }
+  | { kind: "ready"; entries: DropboxEntry[] };
+
 type RenderArgs = {
   bucket: Bucket | undefined;
-  classification: ReturnType<typeof classifyParentListing>;
-  parentEntries: DropboxEntry[];
-  stateListings: Record<string, StateListing>;
+  bucketStatus: BucketStatus;
+  /** Sorted + filtered entries for the active bucket. */
+  visibleEntries: DropboxEntry[];
+  activeFilter: string;
+  viewMode: ViewMode;
+  focusedIndex: number;
   onPreviewImage: (e: DropboxEntry) => void;
   onSaveFile: (e: DropboxEntry) => void;
   savingPath: string | null;
   onNavigateInto: (path: string) => void;
   renderEntryRow: PipelineViewProps["renderEntryRow"];
+  renderEntryTile: PipelineViewProps["renderEntryTile"];
   promoteContext: PromoteContext | null;
   movingPaths: ReadonlySet<string>;
   onPromote: (entry: DropboxEntry) => void;
@@ -1161,127 +1522,157 @@ type RenderArgs = {
   /** Notes table snapshot, used to drive the per-row indicator dot. */
   notesByPath: NotesByPath;
   onOpenNote: (entry: DropboxEntry) => void;
-  /** Active sort applied to the rendered bucket's contents. */
-  sort: SortPreference;
-  /** Per-bucket filter query; "" means "no filter applied". */
-  filter: string;
 };
 
 function renderBucketContents(args: RenderArgs): ReactNode {
-  const { bucket } = args;
-  if (!bucket) {
+  const { bucket, bucketStatus } = args;
+  if (!bucket || bucketStatus.kind === "missing") {
     return (
       <p className="px-2 py-6 text-sm text-muted-foreground">
         No buckets to display.
       </p>
     );
   }
-
-  if (bucket.kind === "inbox") {
-    const inboxEntries = byPath(args.parentEntries, args.classification.inbox);
-    return renderEntryList({ ...args, entries: inboxEntries, emptyMessage: "Inbox is empty." });
-  }
-
-  // bucket.kind === "state"
-  const listing = args.stateListings[bucket.id];
-  if (!listing || listing.kind === "loading") {
+  if (bucketStatus.kind === "loading") {
     return (
       <p className="px-2 py-6 text-sm text-muted-foreground">
         Loading {bucket.name}…
       </p>
     );
   }
-  if (listing.kind === "error") {
+  if (bucketStatus.kind === "error") {
     return (
       <p
         role="alert"
         className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
       >
-        {listing.message}
+        {bucketStatus.message}
       </p>
     );
   }
-  return renderEntryList({
-    ...args,
-    entries: listing.entries,
-    emptyMessage: `${bucket.name} is empty.`,
-  });
+  // bucketStatus.kind === "ready"
+  if (bucketStatus.entries.length === 0) {
+    return (
+      <p className="px-2 py-6 text-sm text-muted-foreground">
+        {bucket.kind === "inbox"
+          ? "Inbox is empty."
+          : `${bucket.name} is empty.`}
+      </p>
+    );
+  }
+  if (args.visibleEntries.length === 0) {
+    return (
+      <p className="px-2 py-6 text-sm text-muted-foreground">
+        No items match “{args.activeFilter.trim()}”.
+      </p>
+    );
+  }
+  return args.viewMode === "gallery" && args.renderEntryTile
+    ? renderEntryGallery(args)
+    : renderEntryList(args);
 }
 
-function renderEntryList(
-  args: RenderArgs & { entries: DropboxEntry[]; emptyMessage: string },
-) {
-  if (args.entries.length === 0) {
-    return (
-      <p className="px-2 py-6 text-sm text-muted-foreground">
-        {args.emptyMessage}
-      </p>
-    );
-  }
-  const sorted = sortEntries(args.entries, args.sort, {
-    toSortable: dropboxEntryToSortable,
-  });
-  const visible = filterByQuery(sorted, args.filter);
-  if (visible.length === 0) {
-    return (
-      <p className="px-2 py-6 text-sm text-muted-foreground">
-        No items match “{args.filter.trim()}”.
-      </p>
-    );
-  }
+function rowHelpersFor(entry: DropboxEntry, args: RenderArgs) {
+  const promote = args.promoteContext
+    ? {
+        targetStateName: args.promoteContext.destStateName,
+        inFlight: args.movingPaths.has(entry.path),
+        onClick: () => args.onPromote(entry),
+      }
+    : undefined;
+  return {
+    saving: args.savingPath === entry.path,
+    onPreview: () => args.onPreviewImage(entry),
+    onSave: () => args.onSaveFile(entry),
+    onOpenFolder: () => args.onNavigateInto(entry.path),
+    promote,
+    select: {
+      selected: args.selectedPaths.has(entry.path),
+      onToggle: () => args.onToggleSelect(entry.path),
+    },
+    note: {
+      hasNote: Boolean(args.notesByPath[entry.path]),
+      onClick: () => args.onOpenNote(entry),
+    },
+  };
+}
+
+function dragHandlersFor(entry: DropboxEntry, args: RenderArgs) {
+  return {
+    onDragStart: (e: React.DragEvent<HTMLElement>) => {
+      e.dataTransfer.setData(
+        DRAG_MIME,
+        JSON.stringify({
+          path: entry.path,
+          name: entry.name,
+          source: args.sourceBucketRef,
+        }),
+      );
+      e.dataTransfer.effectAllowed = "move";
+      args.onDragStart(entry);
+    },
+    onDragEnd: () => args.onDragEnd(),
+  };
+}
+
+function renderEntryList(args: RenderArgs) {
   return (
     <ScrollArea className="h-[min(55vh,520px)] rounded-lg border">
       <ul className="flex flex-col gap-1 p-2">
-        {visible.map((entry) => {
-          const promote = args.promoteContext
-            ? {
-                targetStateName: args.promoteContext.destStateName,
-                inFlight: args.movingPaths.has(entry.path),
-                onClick: () => args.onPromote(entry),
-              }
-            : undefined;
+        {args.visibleEntries.map((entry, idx) => {
           const isDragging = args.draggingPath === entry.path;
           const isSelected = args.selectedPaths.has(entry.path);
+          const isFocused = idx === args.focusedIndex;
+          const helpers = rowHelpersFor(entry, args);
+          const drag = dragHandlersFor(entry, args);
           return (
             <li
               key={entry.path}
               draggable
               data-dragging={isDragging ? "true" : undefined}
               data-selected={isSelected ? "true" : undefined}
+              data-focused={isFocused ? "true" : undefined}
               className={cn(
                 "rounded-md transition",
                 isDragging && "opacity-40",
                 isSelected && "bg-muted/40",
+                isFocused && "outline outline-2 outline-foreground/40",
               )}
-              onDragStart={(e) => {
-                e.dataTransfer.setData(
-                  DRAG_MIME,
-                  JSON.stringify({
-                    path: entry.path,
-                    name: entry.name,
-                    source: args.sourceBucketRef,
-                  }),
-                );
-                e.dataTransfer.effectAllowed = "move";
-                args.onDragStart(entry);
-              }}
-              onDragEnd={() => args.onDragEnd()}
+              onDragStart={drag.onDragStart}
+              onDragEnd={drag.onDragEnd}
             >
-              {args.renderEntryRow(entry, {
-                saving: args.savingPath === entry.path,
-                onPreview: () => args.onPreviewImage(entry),
-                onSave: () => args.onSaveFile(entry),
-                onOpenFolder: () => args.onNavigateInto(entry.path),
-                promote,
-                select: {
-                  selected: isSelected,
-                  onToggle: () => args.onToggleSelect(entry.path),
-                },
-                note: {
-                  hasNote: Boolean(args.notesByPath[entry.path]),
-                  onClick: () => args.onOpenNote(entry),
-                },
-              })}
+              {args.renderEntryRow(entry, helpers)}
+            </li>
+          );
+        })}
+      </ul>
+    </ScrollArea>
+  );
+}
+
+function renderEntryGallery(args: RenderArgs) {
+  // Hard guard — renderBucketContents only delegates here when the
+  // tile renderer was supplied, but the type system doesn't know that.
+  const tileRenderer = args.renderEntryTile;
+  if (!tileRenderer) return renderEntryList(args);
+  return (
+    <ScrollArea className="h-[min(70vh,640px)] rounded-lg border">
+      <ul className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+        {args.visibleEntries.map((entry, idx) => {
+          const isDragging = args.draggingPath === entry.path;
+          const isFocused = idx === args.focusedIndex;
+          const helpers = rowHelpersFor(entry, args);
+          const drag = dragHandlersFor(entry, args);
+          return (
+            <li
+              key={entry.path}
+              draggable
+              data-dragging={isDragging ? "true" : undefined}
+              className={cn("min-w-0", isDragging && "opacity-40")}
+              onDragStart={drag.onDragStart}
+              onDragEnd={drag.onDragEnd}
+            >
+              {tileRenderer(entry, { ...helpers, focused: isFocused })}
             </li>
           );
         })}

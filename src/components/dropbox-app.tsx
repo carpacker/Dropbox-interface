@@ -27,6 +27,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { GalleryTile } from "@/components/gallery-tile";
 import { PipelineView } from "@/components/pipeline-view";
 import { SortDropdown } from "@/components/sort-dropdown";
 import { DropboxPipelineSource } from "@/lib/dropbox-pipeline-source";
@@ -236,6 +237,15 @@ function RemoteBrowser({
   const [preview, setPreview] = useState<Preview | null>(null);
   const [savingPath, setSavingPath] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  // Auto-clear the green notice after a few seconds so it doesn't
+  // hang around through a folder navigation. 6s is long enough to read,
+  // short enough to feel ephemeral. Cleared early when the user kicks
+  // off another save/delete (those paths setSavedNotice(null) first).
+  useEffect(() => {
+    if (savedNotice === null) return;
+    const id = setTimeout(() => setSavedNotice(null), 6_000);
+    return () => clearTimeout(id);
+  }, [savedNotice]);
   /**
    * The entry the user is being asked to confirm deletion for. `null`
    * = no confirmation visible. Set when the user clicks the trash
@@ -496,6 +506,28 @@ function RemoteBrowser({
                 promote={opts.promote}
                 select={opts.select}
                 note={opts.note}
+                delete={
+                  entry.kind === "file"
+                    ? {
+                        inFlight: deletingPath === entry.path,
+                        onClick: () => setDeletePending(entry),
+                      }
+                    : undefined
+                }
+              />
+            )}
+            renderEntryTile={(entry, opts) => (
+              <GalleryTile
+                entry={entry}
+                saving={opts.saving}
+                loadThumbnail={dropboxGetThumbnail}
+                onOpenFolder={opts.onOpenFolder}
+                onPreview={opts.onPreview}
+                onSave={opts.onSave}
+                promote={opts.promote}
+                select={opts.select}
+                note={opts.note}
+                focused={opts.focused}
                 delete={
                   entry.kind === "file"
                     ? {
