@@ -207,6 +207,23 @@ pub async fn dropbox_create_folder_v2(
         .map_err(ServiceError::into_string)
 }
 
+/// Delete a single file or folder via `/files/delete_v2`. Frontend
+/// callers MUST gate this behind a confirmation modal (see
+/// `ConfirmDialog` in the Dropbox app). Dropbox keeps deleted
+/// content in trash for 30 days; restoration is via the dropbox.com
+/// UI rather than this app.
+#[tauri::command]
+pub async fn dropbox_delete_v2(
+    state: State<'_, DropboxState>,
+    app_key: String,
+    path: String,
+) -> Result<DropboxEntry, String> {
+    let svc = state.service(&app_key).await;
+    svc.delete_path(&path)
+        .await
+        .map_err(ServiceError::into_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

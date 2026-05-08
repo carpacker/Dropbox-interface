@@ -6,6 +6,7 @@ import {
   MonitorCog,
   Pin,
   PinOff,
+  Settings as SettingsIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -13,6 +14,7 @@ import { DesktopWorkspaceApp } from "@/components/desktop-workspace-app";
 import { DropboxApp } from "@/components/dropbox-app";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { PhotosApp } from "@/components/photos-app";
+import { SettingsDialog } from "@/components/settings-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -26,8 +28,28 @@ import {
   setPinned,
   type RecentPipeline,
 } from "@/lib/pipeline-recents";
+import {
+  applyTheme,
+  loadSettings,
+  subscribeSettings,
+  type DashboardLayout,
+} from "@/lib/settings";
 import { formatRelativeTime } from "@/lib/time-format";
 import { cn } from "@/lib/utils";
+
+/**
+ * Dashboard layout presets, mapped to Tailwind class strings the
+ * dashboard grid container applies.
+ *
+ *   stacked → 1 column, large cards
+ *   grid    → standard responsive grid (the previous default)
+ *   compact → tighter, more cards visible
+ */
+const DASHBOARD_LAYOUT_CLASSES: Record<DashboardLayout, string> = {
+  stacked: "grid gap-4",
+  grid: "grid gap-4 md:grid-cols-2 xl:grid-cols-3",
+  compact: "grid gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4",
+};
 
 type AppId = "dashboard" | "workspace" | "photos" | "dropbox";
 
@@ -37,6 +59,26 @@ function App() {
     string | undefined
   >(undefined);
   const [recents, setRecents] = useState<RecentPipeline[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [dashboardLayout, setDashboardLayout] = useState<DashboardLayout>(
+    () => loadSettings().dashboardLayout,
+  );
+
+  // Apply theme + react to settings changes from the dialog. Theme
+  // installs on mount and re-applies whenever the user picks a new
+  // value (incl. tracking OS preference under "system").
+  useEffect(() => {
+    let teardown = applyTheme(loadSettings().theme);
+    const unsub = subscribeSettings((next) => {
+      teardown();
+      teardown = applyTheme(next.theme);
+      setDashboardLayout(next.dashboardLayout);
+    });
+    return () => {
+      teardown();
+      unsub();
+    };
+  }, []);
 
   // Re-read the recents list every time the dashboard becomes visible so
   // a freshly-visited pipeline shows up without a window reload.
@@ -88,11 +130,21 @@ function App() {
           ) : null}
           <p className="text-sm font-medium">{title}</p>
         </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={() => setSettingsOpen(true)}
+          aria-label="Open settings"
+          title="Settings"
+        >
+          <SettingsIcon data-icon="inline-start" />
+        </Button>
       </div>
 
       {activeApp === "dashboard" ? (
         <div className="flex flex-col gap-4">
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className={DASHBOARD_LAYOUT_CLASSES[dashboardLayout]}>
             <Card className="flex flex-col">
               <CardHeader className="flex flex-col gap-2">
                 <CardTitle className="flex items-center gap-2">
@@ -231,6 +283,11 @@ function App() {
           <DropboxApp initialPath={dropboxInitialPath} />
         </ErrorBoundary>
       ) : null}
+
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   );
 }

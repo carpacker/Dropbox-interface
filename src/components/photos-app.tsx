@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { FilterChip } from "@/components/filter-chip";
 import { SortDropdown } from "@/components/sort-dropdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,6 +21,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { filterByQuery } from "@/lib/filter";
 import {
   loadSortPreference,
   saveSortPreference,
@@ -52,6 +54,7 @@ export function PhotosApp() {
   const [error, setError] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [isSlideshowPlaying, setIsSlideshowPlaying] = useState(false);
+  const [filter, setFilter] = useState("");
 
   const loadPath = useCallback(async (path: string) => {
     const nextPath = path.trim();
@@ -62,6 +65,8 @@ export function PhotosApp() {
     setError(null);
     setSelectedPath(null);
     setIsSlideshowPlaying(false);
+    // Filter is per-listing; clear when navigating.
+    setFilter("");
     try {
       const rows = await listDirectory(nextPath);
       setEntries(rows);
@@ -96,18 +101,29 @@ export function PhotosApp() {
     () => entries.filter((entry) => entry.isDirectory),
     [entries],
   );
-  const imageEntries = useMemo(
+  // Total images in the folder (pre-filter), used for the "N of M"
+  // count badge.
+  const totalImageCount = useMemo(
     () =>
-      sortEntries(
-        entries.filter(
-          (entry) => !entry.isDirectory && isImageFile(entry.path),
-        ),
-        sort,
-        // Photos grid is files-only; folder-first ordering is irrelevant.
-        { keepFoldersFirst: false },
-      ),
-    [entries, sort],
+      entries.filter(
+        (entry) => !entry.isDirectory && isImageFile(entry.path),
+      ).length,
+    [entries],
   );
+
+  // Sort first, filter second. The filter applies after sort so the
+  // visible order is consistent with what the dropdown advertises.
+  const imageEntries = useMemo(() => {
+    const sorted = sortEntries(
+      entries.filter(
+        (entry) => !entry.isDirectory && isImageFile(entry.path),
+      ),
+      sort,
+      // Photos grid is files-only; folder-first ordering is irrelevant.
+      { keepFoldersFirst: false },
+    );
+    return filterByQuery(sorted, filter);
+  }, [entries, sort, filter]);
 
   async function handleGoUp() {
     if (!currentPath) {
@@ -300,15 +316,23 @@ export function PhotosApp() {
           </div>
         ) : null}
 
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-muted-foreground">
-            {imageEntries.length === 0
+            {totalImageCount === 0
               ? "No images"
-              : `${imageEntries.length} image${
-                  imageEntries.length === 1 ? "" : "s"
-                }`}
+              : filter.trim() !== ""
+                ? `${imageEntries.length} of ${totalImageCount}`
+                : `${totalImageCount} image${totalImageCount === 1 ? "" : "s"}`}
           </p>
-          <SortDropdown value={sort} onChange={updateSort} compact />
+          <div className="flex items-center gap-2">
+            <FilterChip
+              value={filter}
+              onChange={setFilter}
+              label="Filter images"
+              placeholder="Filter…"
+            />
+            <SortDropdown value={sort} onChange={updateSort} compact />
+          </div>
         </div>
 
         <Separator />
@@ -319,7 +343,9 @@ export function PhotosApp() {
           <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed p-8 text-center">
             <ImageIcon data-icon="inline-start" />
             <p className="text-sm text-muted-foreground">
-              No supported images in this folder.
+              {filter.trim() !== ""
+                ? `No images match “${filter.trim()}”.`
+                : "No supported images in this folder."}
             </p>
           </div>
         ) : (

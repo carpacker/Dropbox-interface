@@ -34,7 +34,9 @@ import {
   setNote,
   type NotesByPath,
 } from "@/lib/pipeline-notes";
+import { filterByQuery } from "@/lib/filter";
 import { joinDropboxPath } from "@/lib/dropbox-pipeline-source";
+import { FilterChip } from "@/components/filter-chip";
 import { getRecentPipelines, setPinned } from "@/lib/pipeline-recents";
 import {
   loadSortPreference,
@@ -261,6 +263,15 @@ export function PipelineView(props: PipelineViewProps) {
     setSort(next);
     saveSortPreference(next);
   }
+
+  // Filter is per-bucket and ephemeral. Reset on parent change so the
+  // user doesn't see "no matches" against a stale query.
+  const [filtersByBucket, setFiltersByBucket] = useState<
+    Record<string, string>
+  >({});
+  useEffect(() => {
+    setFiltersByBucket({});
+  }, [parentPath]);
 
   /**
    * Notes are local-only and keyed by Dropbox path. We snapshot the
@@ -715,6 +726,7 @@ export function PipelineView(props: PipelineViewProps) {
     notesByPath,
     onOpenNote: openNoteEditor,
     sort,
+    filter: filtersByBucket[selectedId] ?? "",
   });
 
   const missing = classification.missing;
@@ -860,7 +872,15 @@ export function PipelineView(props: PipelineViewProps) {
         ))}
       </div>
 
-      <div className="flex items-center justify-end gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <FilterChip
+          value={filtersByBucket[selectedId] ?? ""}
+          onChange={(next) =>
+            setFiltersByBucket((prev) => ({ ...prev, [selectedId]: next }))
+          }
+          label={`Filter ${selectedBucket?.name ?? "bucket"}`}
+          placeholder="Filter…"
+        />
         <SortDropdown value={sort} onChange={updateSort} compact />
       </div>
 
@@ -1143,6 +1163,8 @@ type RenderArgs = {
   onOpenNote: (entry: DropboxEntry) => void;
   /** Active sort applied to the rendered bucket's contents. */
   sort: SortPreference;
+  /** Per-bucket filter query; "" means "no filter applied". */
+  filter: string;
 };
 
 function renderBucketContents(args: RenderArgs): ReactNode {
@@ -1199,10 +1221,18 @@ function renderEntryList(
   const sorted = sortEntries(args.entries, args.sort, {
     toSortable: dropboxEntryToSortable,
   });
+  const visible = filterByQuery(sorted, args.filter);
+  if (visible.length === 0) {
+    return (
+      <p className="px-2 py-6 text-sm text-muted-foreground">
+        No items match “{args.filter.trim()}”.
+      </p>
+    );
+  }
   return (
     <ScrollArea className="h-[min(55vh,520px)] rounded-lg border">
       <ul className="flex flex-col gap-1 p-2">
-        {sorted.map((entry) => {
+        {visible.map((entry) => {
           const promote = args.promoteContext
             ? {
                 targetStateName: args.promoteContext.destStateName,
