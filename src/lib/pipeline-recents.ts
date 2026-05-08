@@ -20,9 +20,6 @@ const STORAGE_KEY = "dropbox-interface:recent-pipelines";
 /** Max number of *unpinned* entries kept; pinned entries are unbounded. */
 export const MAX_UNPINNED_RECENTS = 5;
 
-/** Legacy export name retained for callers that haven't migrated yet. */
-export const MAX_RECENT_PIPELINES = MAX_UNPINNED_RECENTS;
-
 export type RecentPipeline = {
   /** Dropbox path of the pipeline parent folder. "" means root. */
   path: string;

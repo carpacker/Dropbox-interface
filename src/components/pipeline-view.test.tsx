@@ -1283,6 +1283,62 @@ describe("PipelineView — Create missing state folder", () => {
   });
 });
 
+describe("PipelineView — lazy-load cancellation", () => {
+  it("recovers from a rapid bucket switch without wedging the original bucket at 'Loading…'", async () => {
+    // Reproduces the bug where the lazy-load effect's cleanup left the
+    // bucket id in fetchedRef even after cancellation, causing return
+    // visits to skip the re-fetch and stay at "Loading…" forever.
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    let resolveFirst: (() => void) | null = null;
+    const firstFetchStarted = new Promise<void>((r) => {
+      resolveFirst = r;
+    });
+    const handler = vi.fn((args: unknown) => {
+      const path = (args as { path: string }).path;
+      if (path === "/parent/1__Processing") {
+        // Signal that the first fetch started, then resolve once the
+        // test has switched away.
+        resolveFirst?.();
+      }
+      return [
+        {
+          kind: "file" as const,
+          name: "x.png",
+          path: `${path}/x.png`,
+          displayPath: `${path}/x.png`,
+          size: 1,
+          serverModified: null,
+        },
+      ];
+    });
+    setInvokeHandler("dropbox_list_folder", handler);
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+      ],
+    });
+
+    // Select Processing — first fetch begins.
+    await user.click(screen.getByRole("tab", { name: /processing/i }));
+    await firstFetchStarted;
+
+    // Immediately switch away — effect cleanup should clear the
+    // in-flight marker so a later re-select can fetch again.
+    await user.click(screen.getByRole("tab", { name: /ready/i }));
+
+    // Come back to Processing.
+    await user.click(screen.getByRole("tab", { name: /processing/i }));
+
+    // The bucket should resolve to ready, not stay "Loading…".
+    expect(
+      await screen.findByTestId("row-/parent/1__Processing/x.png"),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("PipelineView — selection persistence across parent changes", () => {
   it("resets the cached state listings when parentPath changes", async () => {
     const handler = vi.fn((args: unknown) => {
