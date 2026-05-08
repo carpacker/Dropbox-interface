@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { save } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -26,13 +26,23 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { PipelineView } from "@/components/pipeline-view";
+import { SortDropdown } from "@/components/sort-dropdown";
 import { DropboxPipelineSource } from "@/lib/dropbox-pipeline-source";
 import { addRecentPipeline } from "@/lib/pipeline-recents";
 import { parseConfig, type ConfigIssue, type PipelineConfig } from "@/lib/pipeline/schema";
 import {
+  formatBytes,
+  loadSortPreference,
+  saveSortPreference,
+  sortEntries,
+  type SortPreference,
+} from "@/lib/sort";
+import { formatRelativeTime } from "@/lib/time-format";
+import {
   dropboxConnect,
   dropboxDisconnect,
   dropboxDownloadToTemp,
+  dropboxEntryToSortable,
   dropboxGetThumbnail,
   dropboxIsConfigured,
   dropboxListFolder,
@@ -226,6 +236,22 @@ function RemoteBrowser({
   );
   const [pipelineIssues, setPipelineIssues] = useState<ConfigIssue[] | null>(
     null,
+  );
+  const [sort, setSort] = useState<SortPreference>(() =>
+    loadSortPreference(),
+  );
+
+  function updateSort(next: SortPreference) {
+    setSort(next);
+    saveSortPreference(next);
+  }
+
+  const sortedFlatEntries = useMemo(
+    () =>
+      sortEntries(entries, sort, {
+        toSortable: dropboxEntryToSortable,
+      }),
+    [entries, sort],
   );
 
   // Stable instance — pure, no internal state worth caching across renders.
@@ -439,29 +465,41 @@ function RemoteBrowser({
             )}
           />
         ) : (
-          <ScrollArea className="h-[min(55vh,520px)] rounded-lg border">
-            <ul className="flex flex-col gap-1 p-2">
-              {loading ? (
-                <li className="px-2 py-6 text-sm text-muted-foreground">Loading…</li>
-              ) : entries.length === 0 ? (
-                <li className="px-2 py-6 text-sm text-muted-foreground">
-                  This folder is empty.
-                </li>
-              ) : (
-                entries.map((entry) => (
-                  <li key={entry.path}>
-                    <EntryRow
-                      entry={entry}
-                      saving={savingPath === entry.path}
-                      onOpenFolder={(p) => void load(p)}
-                      onPreview={() => void openPreview(entry)}
-                      onSave={() => void handleSave(entry)}
-                    />
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs text-muted-foreground">
+                {entries.length === 0
+                  ? "Empty"
+                  : `${entries.length} item${entries.length === 1 ? "" : "s"}`}
+              </p>
+              <SortDropdown value={sort} onChange={updateSort} compact />
+            </div>
+            <ScrollArea className="h-[min(55vh,520px)] rounded-lg border">
+              <ul className="flex flex-col gap-1 p-2">
+                {loading ? (
+                  <li className="px-2 py-6 text-sm text-muted-foreground">
+                    Loading…
                   </li>
-                ))
-              )}
-            </ul>
-          </ScrollArea>
+                ) : sortedFlatEntries.length === 0 ? (
+                  <li className="px-2 py-6 text-sm text-muted-foreground">
+                    This folder is empty.
+                  </li>
+                ) : (
+                  sortedFlatEntries.map((entry) => (
+                    <li key={entry.path}>
+                      <EntryRow
+                        entry={entry}
+                        saving={savingPath === entry.path}
+                        onOpenFolder={(p) => void load(p)}
+                        onPreview={() => void openPreview(entry)}
+                        onSave={() => void handleSave(entry)}
+                      />
+                    </li>
+                  ))
+                )}
+              </ul>
+            </ScrollArea>
+          </>
         )}
       </CardContent>
 
@@ -555,7 +593,17 @@ function EntryRow({
         }
       >
         <EntryIcon entry={entry} isImage={isImage} />
-        <span className="truncate">{entry.name}</span>
+        <span className="min-w-0 flex-1 truncate text-left">{entry.name}</span>
+        {entry.size !== null && entry.size !== undefined ? (
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {formatBytes(entry.size)}
+          </span>
+        ) : null}
+        {entry.serverModified ? (
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {formatRelativeTime(entry.serverModified, Date.now())}
+          </span>
+        ) : null}
       </Button>
       {promote ? (
         <Button

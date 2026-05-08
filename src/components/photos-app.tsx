@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { SortDropdown } from "@/components/sort-dropdown";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -19,6 +20,12 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import {
+  loadSortPreference,
+  saveSortPreference,
+  sortEntries,
+  type SortPreference,
+} from "@/lib/sort";
 import {
   defaultLocalRoot,
   imageSrc,
@@ -78,13 +85,28 @@ export function PhotosApp() {
     })();
   }, [loadPath]);
 
+  const [sort, setSort] = useState<SortPreference>(() => loadSortPreference());
+
+  function updateSort(next: SortPreference) {
+    setSort(next);
+    saveSortPreference(next);
+  }
+
   const folderEntries = useMemo(
     () => entries.filter((entry) => entry.isDirectory),
     [entries],
   );
   const imageEntries = useMemo(
-    () => entries.filter((entry) => !entry.isDirectory && isImageFile(entry.path)),
-    [entries],
+    () =>
+      sortEntries(
+        entries.filter(
+          (entry) => !entry.isDirectory && isImageFile(entry.path),
+        ),
+        sort,
+        // Photos grid is files-only; folder-first ordering is irrelevant.
+        { keepFoldersFirst: false },
+      ),
+    [entries, sort],
   );
 
   async function handleGoUp() {
@@ -277,6 +299,17 @@ export function PhotosApp() {
             ))}
           </div>
         ) : null}
+
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs text-muted-foreground">
+            {imageEntries.length === 0
+              ? "No images"
+              : `${imageEntries.length} image${
+                  imageEntries.length === 1 ? "" : "s"
+                }`}
+          </p>
+          <SortDropdown value={sort} onChange={updateSort} compact />
+        </div>
 
         <Separator />
 

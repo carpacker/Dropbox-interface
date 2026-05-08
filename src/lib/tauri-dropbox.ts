@@ -141,6 +141,20 @@ export function dropboxLocalSrc(localPath: string): string {
   return convertFileSrc(localPath);
 }
 
+/**
+ * Adapter so the generic `sortEntries` helper (in `lib/sort.ts`) can
+ * read DropboxEntry shapes — DropboxEntry uses `kind` + `serverModified`
+ * where SortableEntry expects `isDirectory` + `modified`.
+ */
+export function dropboxEntryToSortable(entry: DropboxEntry) {
+  return {
+    name: entry.name,
+    size: entry.size,
+    modified: entry.serverModified,
+    isDirectory: entry.kind === "folder",
+  };
+}
+
 export function isDropboxImage(entry: DropboxEntry): boolean {
   if (entry.kind !== "file") {
     return false;

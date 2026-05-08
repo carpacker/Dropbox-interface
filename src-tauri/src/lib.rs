@@ -9,6 +9,12 @@ pub struct FsEntry {
     pub name: String,
     pub path: String,
     pub is_directory: bool,
+    /// File size in bytes; `None` for directories or when metadata is
+    /// unavailable on the host platform.
+    pub size: Option<u64>,
+    /// Last-modified time as unix seconds; `None` when the platform's
+    /// metadata layer can't surface it.
+    pub modified: Option<i64>,
 }
 
 #[tauri::command]
@@ -48,10 +54,22 @@ fn list_directory(path: String) -> Result<Vec<FsEntry>, String> {
     for item in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
         let item = item.map_err(|e| e.to_string())?;
         let meta = item.metadata().map_err(|e| e.to_string())?;
+        let is_directory = meta.is_dir();
+        let size = if is_directory { None } else { Some(meta.len()) };
+        // Modified time → unix seconds. `Metadata::modified` can fail
+        // on filesystems that don't track it (rare; we just surface
+        // None so the UI can render a dash).
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64);
         entries.push(FsEntry {
             name: item.file_name().to_string_lossy().into_owned(),
             path: item.path().to_string_lossy().into_owned(),
-            is_directory: meta.is_dir(),
+            is_directory,
+            size,
+            modified,
         });
     }
 
@@ -224,5 +242,40 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(entries[0].path.ends_with("a.png"));
         assert!(entries[0].path.contains(&*dir.path().to_string_lossy()));
+    }
+
+    #[test]
+    fn list_directory_populates_size_and_modified_for_files() {
+        let dir = tempdir().unwrap();
+        // Write 7 bytes; the size field should reflect that.
+        fs::write(dir.path().join("a.bin"), b"1234567").unwrap();
+        let entries = list_directory(dir.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].size, Some(7));
+        // Modified should be a recent unix-seconds value (within the
+        // last day, generously). On exotic filesystems that don't
+        // surface mtime, this can be None — accept either.
+        if let Some(secs) = entries[0].modified {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            assert!(
+                (secs - now).abs() < 24 * 60 * 60,
+                "modified {} should be near now {}",
+                secs,
+                now,
+            );
+        }
+    }
+
+    #[test]
+    fn list_directory_size_is_none_for_directories() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        let entries = list_directory(dir.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_directory);
+        assert_eq!(entries[0].size, None);
     }
 }

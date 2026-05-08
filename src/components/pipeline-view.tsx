@@ -37,7 +37,15 @@ import {
 import { joinDropboxPath } from "@/lib/dropbox-pipeline-source";
 import { getRecentPipelines, setPinned } from "@/lib/pipeline-recents";
 import {
+  loadSortPreference,
+  saveSortPreference,
+  sortEntries,
+  type SortPreference,
+} from "@/lib/sort";
+import { SortDropdown } from "@/components/sort-dropdown";
+import {
   dropboxCreateFolder,
+  dropboxEntryToSortable,
   dropboxListFolder,
   dropboxMove,
   type DropboxEntry,
@@ -241,6 +249,17 @@ export function PipelineView(props: PipelineViewProps) {
     const next = !isPinned;
     setPinned(parentPath, next);
     setIsPinned(next);
+  }
+
+  // Sort preference — shared globally with the rest of the app via
+  // localStorage so a user's "newest first" choice carries from the
+  // local file browser into Dropbox bucket listings.
+  const [sort, setSort] = useState<SortPreference>(() =>
+    loadSortPreference(),
+  );
+  function updateSort(next: SortPreference) {
+    setSort(next);
+    saveSortPreference(next);
   }
 
   /**
@@ -695,6 +714,7 @@ export function PipelineView(props: PipelineViewProps) {
     onToggleSelect: toggleSelect,
     notesByPath,
     onOpenNote: openNoteEditor,
+    sort,
   });
 
   const missing = classification.missing;
@@ -838,6 +858,10 @@ export function PipelineView(props: PipelineViewProps) {
             onDrop={handleDropOnBucket(b)}
           />
         ))}
+      </div>
+
+      <div className="flex items-center justify-end gap-2">
+        <SortDropdown value={sort} onChange={updateSort} compact />
       </div>
 
       <Separator />
@@ -1117,6 +1141,8 @@ type RenderArgs = {
   /** Notes table snapshot, used to drive the per-row indicator dot. */
   notesByPath: NotesByPath;
   onOpenNote: (entry: DropboxEntry) => void;
+  /** Active sort applied to the rendered bucket's contents. */
+  sort: SortPreference;
 };
 
 function renderBucketContents(args: RenderArgs): ReactNode {
@@ -1170,10 +1196,13 @@ function renderEntryList(
       </p>
     );
   }
+  const sorted = sortEntries(args.entries, args.sort, {
+    toSortable: dropboxEntryToSortable,
+  });
   return (
     <ScrollArea className="h-[min(55vh,520px)] rounded-lg border">
       <ul className="flex flex-col gap-1 p-2">
-        {args.entries.map((entry) => {
+        {sorted.map((entry) => {
           const promote = args.promoteContext
             ? {
                 targetStateName: args.promoteContext.destStateName,

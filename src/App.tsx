@@ -26,6 +26,7 @@ import {
   setPinned,
   type RecentPipeline,
 } from "@/lib/pipeline-recents";
+import { formatRelativeTime } from "@/lib/time-format";
 import { cn } from "@/lib/utils";
 
 type AppId = "dashboard" | "workspace" | "photos" | "dropbox";
@@ -232,25 +233,6 @@ function App() {
       ) : null}
     </div>
   );
-}
-
-/**
- * "5m ago" / "2h ago" / "3d ago"-style relative timestamp. Pure;
- * exported for the test file.
- */
-export function formatRelativeTime(ms: number, now: number): string {
-  const delta = Math.max(0, now - ms);
-  const sec = Math.floor(delta / 1000);
-  if (sec < 60) return "just now";
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  if (day < 30) return `${day}d ago`;
-  const month = Math.floor(day / 30);
-  if (month < 12) return `${month}mo ago`;
-  return `${Math.floor(month / 12)}y ago`;
 }
 
 export default App;

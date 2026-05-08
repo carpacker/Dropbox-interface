@@ -1339,6 +1339,61 @@ describe("PipelineView — lazy-load cancellation", () => {
   });
 });
 
+describe("PipelineView — sort dropdown", () => {
+  it("respects the persisted sort preference when ordering inbox items", async () => {
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    setInvokeHandler("dropbox_list_folder", () => []);
+    localStorage.setItem(
+      "dropbox-interface:sort-preference-v1",
+      JSON.stringify({ key: "modified", direction: "desc" }),
+    );
+
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+        // Two files; older one first in the input array, newer second.
+        dropboxFile("old.jpg", "/parent/old.jpg", {
+          serverModified: "2025-01-01T00:00:00Z",
+        }),
+        dropboxFile("new.jpg", "/parent/new.jpg", {
+          serverModified: "2025-06-01T00:00:00Z",
+        }),
+      ],
+      renderEntryRow: (entry) => (
+        <div data-testid={`row-${entry.path}`}>{entry.name}</div>
+      ),
+    });
+
+    // Inbox is selected by default; with `modified desc` the newer
+    // file should render first.
+    const list = await screen.findByRole("tabpanel");
+    const order = within(list)
+      .getAllByTestId(/^row-/)
+      .map((el) => el.getAttribute("data-testid"));
+    expect(order).toEqual(["row-/parent/new.jpg", "row-/parent/old.jpg"]);
+  });
+
+  it("flipping the sort direction button persists the new preference", async () => {
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    setInvokeHandler("dropbox_list_folder", () => []);
+    localStorage.removeItem("dropbox-interface:sort-preference-v1");
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [dropboxFolder("1__Processing")],
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: /sort ascending/i }),
+    );
+    const stored = JSON.parse(
+      localStorage.getItem("dropbox-interface:sort-preference-v1")!,
+    );
+    expect(stored).toEqual({ key: "name", direction: "desc" });
+  });
+});
+
 describe("PipelineView — selection persistence across parent changes", () => {
   it("resets the cached state listings when parentPath changes", async () => {
     const handler = vi.fn((args: unknown) => {

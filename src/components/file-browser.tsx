@@ -1,6 +1,7 @@
 import { ChevronUp, File, Folder, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { SortDropdown } from "@/components/sort-dropdown";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -13,11 +14,19 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
+  formatBytes,
+  loadSortPreference,
+  saveSortPreference,
+  sortEntries,
+  type SortPreference,
+} from "@/lib/sort";
+import {
   defaultLocalRoot,
   listDirectory,
   parentDirectory,
   type FsEntry,
 } from "@/lib/tauri-fs";
+import { formatRelativeTime } from "@/lib/time-format";
 
 export function FileBrowser() {
   const [currentPath, setCurrentPath] = useState("");
@@ -25,6 +34,7 @@ export function FileBrowser() {
   const [entries, setEntries] = useState<FsEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [sort, setSort] = useState<SortPreference>(() => loadSortPreference());
 
   const loadPath = useCallback(async (path: string) => {
     setLoading(true);
@@ -62,6 +72,16 @@ export function FileBrowser() {
     };
   }, [loadPath]);
 
+  const sortedEntries = useMemo(
+    () => sortEntries(entries, sort),
+    [entries, sort],
+  );
+
+  function updateSort(next: SortPreference) {
+    setSort(next);
+    saveSortPreference(next);
+  }
+
   async function handleGoUp() {
     if (!currentPath) {
       return;
@@ -87,6 +107,10 @@ export function FileBrowser() {
     }
     await loadPath(entry.path);
   }
+
+  // Snapshot Date.now() once per render so every row's relative-time
+  // label uses the same reference point.
+  const nowMs = Date.now();
 
   return (
     <Card className="flex flex-col gap-0 overflow-hidden">
@@ -136,6 +160,15 @@ export function FileBrowser() {
           </div>
         </form>
 
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs text-muted-foreground">
+            {entries.length === 0
+              ? "Empty"
+              : `${entries.length} item${entries.length === 1 ? "" : "s"}`}
+          </p>
+          <SortDropdown value={sort} onChange={updateSort} compact />
+        </div>
+
         {error ? (
           <p className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {error}
@@ -150,12 +183,12 @@ export function FileBrowser() {
               <p className="px-2 py-6 text-sm text-muted-foreground">
                 Loading…
               </p>
-            ) : entries.length === 0 ? (
+            ) : sortedEntries.length === 0 ? (
               <p className="px-2 py-6 text-sm text-muted-foreground">
                 This folder is empty.
               </p>
             ) : (
-              entries.map((entry) => (
+              sortedEntries.map((entry) => (
                 <Button
                   key={entry.path}
                   type="button"
@@ -169,7 +202,19 @@ export function FileBrowser() {
                   ) : (
                     <File data-icon="inline-start" />
                   )}
-                  <span className="truncate">{entry.name}</span>
+                  <span className="min-w-0 flex-1 truncate text-left">
+                    {entry.name}
+                  </span>
+                  {entry.size !== null && entry.size !== undefined ? (
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {formatBytes(entry.size)}
+                    </span>
+                  ) : null}
+                  {entry.modified !== null && entry.modified !== undefined ? (
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {formatRelativeTime(entry.modified * 1000, nowMs)}
+                    </span>
+                  ) : null}
                 </Button>
               ))
             )}
