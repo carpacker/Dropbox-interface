@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -88,6 +88,25 @@ impl Default for WebBridgeManager {
             pending_dashboard_layout: Arc::new(Mutex::new(None)),
         }
     }
+}
+
+/// Cap JSON command bodies so a malicious client cannot exhaust memory.
+const MAX_JSON_BODY_BYTES: usize = 256 * 1024;
+
+fn read_limited_utf8(reader: impl Read, max: usize) -> Result<String, String> {
+    let mut buf = Vec::new();
+    reader
+        .take(max as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| e.to_string())?;
+    if buf.len() > max {
+        return Err("request body too large".to_string());
+    }
+    String::from_utf8(buf).map_err(|_| "invalid UTF-8 in request body".to_string())
+}
+
+fn json_error_response(message: &str) -> String {
+    serde_json::json!({ "error": message }).to_string()
 }
 
 fn cors_headers(allow_origin: &str) -> [Header; 4] {
@@ -182,7 +201,7 @@ impl WebBridgeManager {
                         respond_json(
                             req,
                             401,
-                            "{\"error\":\"invalid API key\"}".to_string(),
+                            json_error_response("invalid API key"),
                             &allow_origin_for_thread,
                         );
                         continue;
@@ -208,7 +227,7 @@ impl WebBridgeManager {
                                 {
                                     "method": "GET",
                                     "path": "/health",
-                                    "description": "Liveness probe; no auth required when API key is unset (same as other routes once key is configured).",
+                                    "description": "Liveness probe. When the bridge has no API key, omit x-bridge-key; when a key is configured, all routes require it.",
                                 },
                                 {
                                     "method": "GET",
@@ -253,6 +272,13 @@ impl WebBridgeManager {
                             "headers": {
                                 "optional": ["x-bridge-key — required when bridge is started with a non-empty API key"],
                             },
+                            "runtime": {
+                                "requiresApiKey": !api_key_for_thread.is_empty(),
+                                "allowOrigin": allow_origin_for_thread,
+                            },
+                            "limits": {
+                                "maxJsonBodyBytes": MAX_JSON_BODY_BYTES,
+                            },
                         });
                         respond_json(
                             req,
@@ -262,36 +288,55 @@ impl WebBridgeManager {
                         );
                     }
                     (&Method::Get, "/api/bridge/status") => {
-                        let payload = format!(
-                            "{{\"ok\":true,\"requestCount\":{},\"allowOrigin\":\"{}\"}}",
-                            count.load(Ordering::SeqCst),
-                            allow_origin_for_thread.replace('"', "\\\"")
+                        let payload = serde_json::json!({
+                            "ok": true,
+                            "requestCount": count.load(Ordering::SeqCst),
+                            "allowOrigin": allow_origin_for_thread.as_str(),
+                        });
+                        respond_json(
+                            req,
+                            200,
+                            payload.to_string(),
+                            &allow_origin_for_thread,
                         );
-                        respond_json(req, 200, payload, &allow_origin_for_thread);
                     }
                     (&Method::Get, "/api/dashboard/state") => {
                         let dashboard_json = dashboard_state
                             .lock()
                             .map(|s| s.clone())
                             .unwrap_or_else(|_| "{}".to_string());
-                        let payload = format!(
-                            "{{\"ok\":true,\"state\":{}}}",
-                            dashboard_json
+                        let state_val: serde_json::Value =
+                            serde_json::from_str(&dashboard_json).unwrap_or(serde_json::json!({}));
+                        let payload = serde_json::json!({
+                            "ok": true,
+                            "state": state_val,
+                        });
+                        respond_json(
+                            req,
+                            200,
+                            payload.to_string(),
+                            &allow_origin_for_thread,
                         );
-                        respond_json(req, 200, payload, &allow_origin_for_thread);
                     }
                     (&Method::Post, "/api/commands/open-app") => {
-                        let mut body = String::new();
                         let reader = req.as_reader();
-                        if reader.read_to_string(&mut body).is_err() {
-                            respond_json(
-                                req,
-                                400,
-                                "{\"error\":\"invalid request body\"}".to_string(),
-                                &allow_origin_for_thread,
-                            );
-                            continue;
-                        }
+                        let body = match read_limited_utf8(reader, MAX_JSON_BODY_BYTES) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let status = if e == "request body too large" {
+                                    413
+                                } else {
+                                    400
+                                };
+                                respond_json(
+                                    req,
+                                    status,
+                                    json_error_response(&e),
+                                    &allow_origin_for_thread,
+                                );
+                                continue;
+                            }
+                        };
                         let parsed: Result<OpenAppCommand, _> = serde_json::from_str(&body);
                         let cmd = match parsed {
                             Ok(c) => c,
@@ -299,7 +344,7 @@ impl WebBridgeManager {
                                 respond_json(
                                     req,
                                     400,
-                                    "{\"error\":\"invalid request body\"}".to_string(),
+                                    json_error_response("invalid request body"),
                                     &allow_origin_for_thread,
                                 );
                                 continue;
@@ -315,74 +360,104 @@ impl WebBridgeManager {
                             | "shoots_field"
                             | "shoots_studio"
                             | "assets" => {
-                                if let Ok(mut queue) = open_app_queue.lock() {
-                                    *queue = Some(cmd);
+                                match open_app_queue.lock() {
+                                    Ok(mut queue) => {
+                                        *queue = Some(cmd);
+                                        respond_json(
+                                            req,
+                                            200,
+                                            "{\"ok\":true}".to_string(),
+                                            &allow_origin_for_thread,
+                                        );
+                                    }
+                                    Err(_) => respond_json(
+                                        req,
+                                        503,
+                                        json_error_response("bridge queue unavailable"),
+                                        &allow_origin_for_thread,
+                                    ),
                                 }
-                                respond_json(
-                                    req,
-                                    200,
-                                    "{\"ok\":true}".to_string(),
-                                    &allow_origin_for_thread,
-                                );
                             }
                             _ => {
                                 respond_json(
                                     req,
                                     400,
-                                    "{\"error\":\"invalid app target\"}".to_string(),
+                                    json_error_response("invalid app target"),
                                     &allow_origin_for_thread,
                                 );
                             }
                         }
                     }
                     (&Method::Post, "/api/commands/dashboard-edit") => {
-                        let mut body = String::new();
                         let reader = req.as_reader();
-                        if reader.read_to_string(&mut body).is_err() {
-                            respond_json(
-                                req,
-                                400,
-                                "{\"error\":\"invalid request body\"}".to_string(),
-                                &allow_origin_for_thread,
-                            );
-                            continue;
-                        }
+                        let body = match read_limited_utf8(reader, MAX_JSON_BODY_BYTES) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let status = if e == "request body too large" {
+                                    413
+                                } else {
+                                    400
+                                };
+                                respond_json(
+                                    req,
+                                    status,
+                                    json_error_response(&e),
+                                    &allow_origin_for_thread,
+                                );
+                                continue;
+                            }
+                        };
 
                         let parsed: Result<DashboardEditCommand, _> = serde_json::from_str(&body);
                         match parsed {
                             Ok(cmd) if cmd.edit_mode.is_some() || cmd.layout_locked.is_some() => {
-                                if let Ok(mut queue) = dashboard_edit_queue.lock() {
-                                    *queue = Some(cmd);
+                                match dashboard_edit_queue.lock() {
+                                    Ok(mut queue) => {
+                                        *queue = Some(cmd);
+                                        respond_json(
+                                            req,
+                                            200,
+                                            "{\"ok\":true}".to_string(),
+                                            &allow_origin_for_thread,
+                                        );
+                                    }
+                                    Err(_) => respond_json(
+                                        req,
+                                        503,
+                                        json_error_response("bridge queue unavailable"),
+                                        &allow_origin_for_thread,
+                                    ),
                                 }
-                                respond_json(
-                                    req,
-                                    200,
-                                    "{\"ok\":true}".to_string(),
-                                    &allow_origin_for_thread,
-                                );
                             }
                             _ => {
                                 respond_json(
                                     req,
                                     400,
-                                    "{\"error\":\"invalid dashboard edit command\"}".to_string(),
+                                    json_error_response("invalid dashboard edit command"),
                                     &allow_origin_for_thread,
                                 );
                             }
                         }
                     }
                     (&Method::Post, "/api/commands/dashboard-layout") => {
-                        let mut body = String::new();
                         let reader = req.as_reader();
-                        if reader.read_to_string(&mut body).is_err() {
-                            respond_json(
-                                req,
-                                400,
-                                "{\"error\":\"invalid request body\"}".to_string(),
-                                &allow_origin_for_thread,
-                            );
-                            continue;
-                        }
+                        let body = match read_limited_utf8(reader, MAX_JSON_BODY_BYTES) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let status = if e == "request body too large" {
+                                    413
+                                } else {
+                                    400
+                                };
+                                respond_json(
+                                    req,
+                                    status,
+                                    json_error_response(&e),
+                                    &allow_origin_for_thread,
+                                );
+                                continue;
+                            }
+                        };
                         let parsed: Result<DashboardLayoutCommand, _> = serde_json::from_str(&body);
                         match parsed {
                             Ok(cmd) => {
@@ -400,26 +475,34 @@ impl WebBridgeManager {
                                     respond_json(
                                         req,
                                         400,
-                                        "{\"error\":\"tools or internal patch required\"}".to_string(),
+                                        json_error_response("tools or internal patch required"),
                                         &allow_origin_for_thread,
                                     );
                                     continue;
                                 }
-                                if let Ok(mut queue) = dashboard_layout_queue.lock() {
-                                    *queue = Some(cmd);
+                                match dashboard_layout_queue.lock() {
+                                    Ok(mut queue) => {
+                                        *queue = Some(cmd);
+                                        respond_json(
+                                            req,
+                                            200,
+                                            "{\"ok\":true}".to_string(),
+                                            &allow_origin_for_thread,
+                                        );
+                                    }
+                                    Err(_) => respond_json(
+                                        req,
+                                        503,
+                                        json_error_response("bridge queue unavailable"),
+                                        &allow_origin_for_thread,
+                                    ),
                                 }
-                                respond_json(
-                                    req,
-                                    200,
-                                    "{\"ok\":true}".to_string(),
-                                    &allow_origin_for_thread,
-                                );
                             }
                             Err(_) => {
                                 respond_json(
                                     req,
                                     400,
-                                    "{\"error\":\"invalid dashboard layout command\"}".to_string(),
+                                    json_error_response("invalid dashboard layout command"),
                                     &allow_origin_for_thread,
                                 );
                             }
@@ -429,7 +512,7 @@ impl WebBridgeManager {
                         respond_json(
                             req,
                             404,
-                            "{\"error\":\"endpoint not found\"}".to_string(),
+                            json_error_response("endpoint not found"),
                             &allow_origin_for_thread,
                         );
                     }

@@ -13,6 +13,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import {
+  bridgeHttpGet,
+  bridgeHttpPostJson,
+  prettifyJsonText,
   webBridgeStart,
   webBridgeStatus,
   webBridgeStop,
@@ -76,13 +79,7 @@ export function WebInterfaceApp() {
     try {
       const controller = new AbortController();
       const timer = window.setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/health`, {
-        method: "GET",
-        headers: config.apiKey
-          ? {
-              "x-bridge-key": config.apiKey,
-            }
-          : undefined,
+      const res = await bridgeHttpGet(config.baseUrl, "/health", config.apiKey || undefined, {
         signal: controller.signal,
       });
       window.clearTimeout(timer);
@@ -98,12 +95,9 @@ export function WebInterfaceApp() {
     if (!config.baseUrl.trim()) return;
     setBusy(true);
     try {
-      const res = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/dashboard/state`, {
-        method: "GET",
-        headers: config.apiKey ? { "x-bridge-key": config.apiKey } : undefined,
-      });
+      const res = await bridgeHttpGet(config.baseUrl, "/api/dashboard/state", config.apiKey || undefined);
       const text = await res.text();
-      setDashboardStatePreview(text);
+      setDashboardStatePreview(prettifyJsonText(text));
       setStatusText(`Dashboard state endpoint: ${res.status} ${res.statusText}`);
     } catch (e) {
       setStatusText(`Dashboard state fetch failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -116,16 +110,9 @@ export function WebInterfaceApp() {
     if (!config.baseUrl.trim()) return;
     setBusy(true);
     try {
-      const res = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/bridge/info`, {
-        method: "GET",
-        headers: config.apiKey ? { "x-bridge-key": config.apiKey } : undefined,
-      });
+      const res = await bridgeHttpGet(config.baseUrl, "/api/bridge/info", config.apiKey || undefined);
       const text = await res.text();
-      try {
-        setBridgeInfoPreview(JSON.stringify(JSON.parse(text), null, 2));
-      } catch {
-        setBridgeInfoPreview(text);
-      }
+      setBridgeInfoPreview(prettifyJsonText(text));
       setStatusText(`Bridge info: ${res.status} ${res.statusText}`);
     } catch (e) {
       setStatusText(`Bridge info fetch failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -155,14 +142,12 @@ export function WebInterfaceApp() {
       if (folder) {
         body.initialFolder = folder;
       }
-      const res = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/commands/open-app`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(config.apiKey ? { "x-bridge-key": config.apiKey } : {}),
-        },
-        body: JSON.stringify(body),
-      });
+      const res = await bridgeHttpPostJson(
+        config.baseUrl,
+        "/api/commands/open-app",
+        body,
+        config.apiKey || undefined,
+      );
       const payload = await res.text();
       setStatusText(`Open app command (${app}): ${res.status} ${payload}`);
     } catch (e) {
@@ -176,14 +161,12 @@ export function WebInterfaceApp() {
     if (!config.baseUrl.trim()) return;
     setBusy(true);
     try {
-      const res = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/commands/dashboard-layout`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(config.apiKey ? { "x-bridge-key": config.apiKey } : {}),
-        },
-        body: JSON.stringify(command),
-      });
+      const res = await bridgeHttpPostJson(
+        config.baseUrl,
+        "/api/commands/dashboard-layout",
+        command,
+        config.apiKey || undefined,
+      );
       const payload = await res.text();
       setStatusText(`Dashboard layout command: ${res.status} ${payload}`);
     } catch (e) {
@@ -197,14 +180,12 @@ export function WebInterfaceApp() {
     if (!config.baseUrl.trim()) return;
     setBusy(true);
     try {
-      const res = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/commands/dashboard-edit`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(config.apiKey ? { "x-bridge-key": config.apiKey } : {}),
-        },
-        body: JSON.stringify(command),
-      });
+      const res = await bridgeHttpPostJson(
+        config.baseUrl,
+        "/api/commands/dashboard-edit",
+        command,
+        config.apiKey || undefined,
+      );
       const payload = await res.text();
       setStatusText(`Dashboard edit command: ${res.status} ${payload}`);
     } catch (e) {
