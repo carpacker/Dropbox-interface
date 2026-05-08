@@ -5,7 +5,8 @@ use reqwest::Client;
 use serde_json::json;
 
 use super::api::{
-    entries_from_raw, AccountResponse, DropboxAccount, DropboxEntry, ListFolderResponse,
+    entries_from_raw, entry_from_raw, AccountResponse, DropboxAccount, DropboxEntry,
+    ListFolderResponse, MetadataEnvelope,
 };
 use super::oauth::{TokenResponse, REVOKE_URL, TOKEN_URL};
 use super::tokens::{StoredTokens, TokenStore, TokenStoreError};
@@ -323,6 +324,82 @@ impl DropboxService {
     async fn fresh_access_token(&self) -> Result<String, ServiceError> {
         let tokens = self.store.load()?.ok_or(ServiceError::NotConnected)?;
         self.access_token_refreshing_if_needed(tokens).await
+    }
+
+    /// Move (or rename) an item via `/files/move_v2`. Returns the entry's
+    /// new metadata. Used by the Promote action to shift an item from one
+    /// state folder to its successor.
+    pub async fn move_path(
+        &self,
+        from_path: &str,
+        to_path: &str,
+    ) -> Result<DropboxEntry, ServiceError> {
+        let envelope: MetadataEnvelope = self
+            .rpc(
+                "/files/move_v2",
+                json!({
+                    "from_path": from_path,
+                    "to_path": to_path,
+                    "allow_shared_folder": false,
+                    "autorename": false,
+                    "allow_ownership_transfer": false,
+                }),
+            )
+            .await?;
+        entry_from_raw(envelope.metadata).ok_or_else(|| {
+            ServiceError::Decode(
+                "move_v2 returned metadata with an unexpected .tag".into(),
+            )
+        })
+    }
+
+    /// Create a folder via `/files/create_folder_v2`. Returns the new
+    /// folder's metadata. Used by the "create missing state folder"
+    /// affordance.
+    pub async fn create_folder(&self, path: &str) -> Result<DropboxEntry, ServiceError> {
+        let envelope: MetadataEnvelope = self
+            .rpc(
+                "/files/create_folder_v2",
+                json!({ "path": path, "autorename": false }),
+            )
+            .await?;
+        entry_from_raw(envelope.metadata).ok_or_else(|| {
+            ServiceError::Decode(
+                "create_folder_v2 returned metadata with an unexpected .tag".into(),
+            )
+        })
+    }
+
+    /// Shared helper for JSON-in/JSON-out RPC endpoints under
+    /// `api.dropboxapi.com/2/...`. Refreshes the access token if needed,
+    /// posts the JSON body, and decodes the response.
+    async fn rpc<T: serde::de::DeserializeOwned>(
+        &self,
+        endpoint: &'static str,
+        body: serde_json::Value,
+    ) -> Result<T, ServiceError> {
+        let access = self.fresh_access_token().await?;
+        let url = format!("{}{endpoint}", self.endpoints.api_base);
+        let resp = self
+            .http
+            .post(url)
+            .bearer_auth(&access)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ServiceError::Network(e.to_string()))?;
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ServiceError::Network(e.to_string()))?;
+        if !status.is_success() {
+            return Err(ServiceError::Api {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+        serde_json::from_str(&text).map_err(|e| ServiceError::Decode(e.to_string()))
     }
 
     pub async fn disconnect(&self) -> Result<(), ServiceError> {
@@ -982,6 +1059,144 @@ mod tests {
         )
         .await;
         let err = svc.read_text_capped("/x", 1024).await.unwrap_err();
+        assert!(matches!(err, ServiceError::NotConnected));
+    }
+
+    #[tokio::test]
+    async fn move_path_sends_from_and_to_and_returns_typed_entry() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/move_v2"))
+            .and(body_string_contains("\"from_path\":\"/a/x.png\""))
+            .and(body_string_contains("\"to_path\":\"/b/x.png\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "metadata": {
+                    ".tag": "file",
+                    "name": "x.png",
+                    "path_lower": "/b/x.png",
+                    "path_display": "/b/x.png",
+                    "size": 12,
+                    "server_modified": "2025-01-02T03:04:05Z"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        let entry = svc.move_path("/a/x.png", "/b/x.png").await.unwrap();
+        assert_eq!(entry.name, "x.png");
+        assert_eq!(entry.path, "/b/x.png");
+        assert_eq!(entry.size, Some(12));
+    }
+
+    #[tokio::test]
+    async fn move_path_surfaces_to_conflict() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/move_v2"))
+            .respond_with(ResponseTemplate::new(409).set_body_string(
+                r#"{"error_summary":"to/conflict/file/.","error":{".tag":"to","to":{".tag":"conflict","conflict":{".tag":"file"}}}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        match svc.move_path("/a", "/b").await.unwrap_err() {
+            ServiceError::Api { status, body } => {
+                assert_eq!(status, 409);
+                assert!(body.contains("to/conflict"));
+            }
+            e => panic!("wrong error: {e:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn move_path_returns_not_connected_without_tokens() {
+        let server = MockServer::start().await;
+        let svc = build_service(
+            &server,
+            Arc::new(InMemoryStore::new()),
+            Arc::new(FixedClock::new(1_000)),
+        )
+        .await;
+        let err = svc.move_path("/a", "/b").await.unwrap_err();
+        assert!(matches!(err, ServiceError::NotConnected));
+    }
+
+    #[tokio::test]
+    async fn move_path_errors_when_metadata_tag_is_unknown() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/move_v2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "metadata": { ".tag": "deleted", "name": "x", "path_lower": "/x" }
+            })))
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        match svc.move_path("/a", "/b").await.unwrap_err() {
+            ServiceError::Decode(msg) => assert!(msg.contains("unexpected .tag")),
+            e => panic!("wrong error: {e:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_folder_returns_typed_folder_entry() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/create_folder_v2"))
+            .and(body_string_contains("\"path\":\"/Photos/2026\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "metadata": {
+                    ".tag": "folder",
+                    "name": "2026",
+                    "path_lower": "/photos/2026",
+                    "path_display": "/Photos/2026"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        let entry = svc.create_folder("/Photos/2026").await.unwrap();
+        assert_eq!(entry.name, "2026");
+        // entry_from_raw nullifies size/server_modified for folders
+        assert!(entry.size.is_none());
+        assert!(entry.server_modified.is_none());
+    }
+
+    #[tokio::test]
+    async fn create_folder_surfaces_path_conflict() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/create_folder_v2"))
+            .respond_with(ResponseTemplate::new(409).set_body_string(
+                r#"{"error_summary":"path/conflict/folder/.","error":{".tag":"path","path":{".tag":"conflict","conflict":{".tag":"folder"}}}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        match svc.create_folder("/already-here").await.unwrap_err() {
+            ServiceError::Api { status, body } => {
+                assert_eq!(status, 409);
+                assert!(body.contains("path/conflict"));
+            }
+            e => panic!("wrong error: {e:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_folder_returns_not_connected_without_tokens() {
+        let server = MockServer::start().await;
+        let svc = build_service(
+            &server,
+            Arc::new(InMemoryStore::new()),
+            Arc::new(FixedClock::new(1_000)),
+        )
+        .await;
+        let err = svc.create_folder("/x").await.unwrap_err();
         assert!(matches!(err, ServiceError::NotConnected));
     }
 

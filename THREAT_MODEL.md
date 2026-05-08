@@ -8,7 +8,9 @@ forget why something is the way it is.
 
 **In scope.** Internal team tool used to review and shepherd creative content
 through state-prefixed Dropbox folders (`1__Processing`, `2__ready`, …) on
-trusted, single-user desktop machines.
+trusted, single-user desktop machines. As of the Promote round, the tool
+also performs **write** operations on Dropbox (move + create folder) on
+behalf of the user.
 
 **Out of scope.** B2B / B2C distribution, multi-tenant security, code-signing
 release pipelines, untrusted user input from the public internet, mobile.
@@ -97,6 +99,25 @@ memory-safe and audited.
 All entry names, paths, error messages, and account fields are rendered via
 React's text interpolation (which escapes). The only HTML we hand-build is
 the loopback success/error page in Rust, which goes through `html_escape`.
+
+### D8b. Write scope is narrow on purpose.
+We request `files.metadata.write` to support Promote (move) and the
+"create missing state folder" affordance, but **not**
+`files.content.write`. The renderer never originates new file bytes —
+all data movement is rearrangement of existing Dropbox content. If we
+ever add upload support, this decision is the gate that has to flip
+explicitly. Existing users who connected before this round must
+disconnect + reconnect to grant the new scope; a missing-scope error
+from Dropbox surfaces inline as a normal API error and points the user
+to reconnect.
+
+### D8c. Promotes are reversible by design.
+Every successful Promote sets a transient `undoableMove` record in the
+view that auto-clears after 8s but offers an explicit Undo button (a
+second `dropbox_move_v2` call in reverse). Combined with Dropbox's
+30-day trash, a misclick is recoverable both immediately and
+long-term. We deliberately did **not** ship `delete_v2` in this round
+to keep the blast radius narrow; that's a separate round when needed.
 
 ### D9. Capabilities are minimal.
 `src-tauri/capabilities/default.json`: `core:default`, `opener:default`,

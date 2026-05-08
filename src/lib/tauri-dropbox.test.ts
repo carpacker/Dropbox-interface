@@ -4,12 +4,14 @@ import { setInvokeHandler } from "@/test/tauri-core-mock";
 import {
   dropboxAppKey,
   dropboxConnect,
+  dropboxCreateFolder,
   dropboxDisconnect,
   dropboxDownloadToTemp,
   dropboxGetThumbnail,
   dropboxIsConfigured,
   dropboxListFolder,
   dropboxLocalSrc,
+  dropboxMove,
   dropboxParent,
   dropboxSaveFileTo,
   dropboxStatus,
@@ -182,6 +184,51 @@ describe("invoke wrappers", () => {
 
   it("dropboxLocalSrc wraps a path with convertFileSrc", () => {
     expect(dropboxLocalSrc("/tmp/x.jpg")).toBe("asset://localhost//tmp/x.jpg");
+  });
+
+  it("dropboxMove forwards from + to and returns the new entry", async () => {
+    const moved: DropboxEntry = {
+      kind: "file",
+      name: "x.png",
+      path: "/2__ready/x.png",
+      displayPath: "/2__ready/x.png",
+      size: 12,
+      serverModified: "2025-01-02T00:00:00Z",
+    };
+    setInvokeHandler("dropbox_move_v2", (args) => {
+      expect(args).toEqual({
+        appKey: "test-key",
+        fromPath: "/1__Processing/x.png",
+        toPath: "/2__ready/x.png",
+      });
+      return moved;
+    });
+    await expect(
+      dropboxMove("/1__Processing/x.png", "/2__ready/x.png"),
+    ).resolves.toEqual(moved);
+  });
+
+  it("dropboxMove propagates Rust-side conflict errors", async () => {
+    setInvokeHandler("dropbox_move_v2", () => {
+      throw new Error("dropbox returned an error: 409 to/conflict");
+    });
+    await expect(dropboxMove("/a", "/b")).rejects.toThrow(/to\/conflict/);
+  });
+
+  it("dropboxCreateFolder forwards path and returns the folder", async () => {
+    const folder: DropboxEntry = {
+      kind: "folder",
+      name: "2__ready",
+      path: "/2__ready",
+      displayPath: "/2__ready",
+      size: null,
+      serverModified: null,
+    };
+    setInvokeHandler("dropbox_create_folder_v2", (args) => {
+      expect(args).toEqual({ appKey: "test-key", path: "/2__ready" });
+      return folder;
+    });
+    await expect(dropboxCreateFolder("/2__ready")).resolves.toEqual(folder);
   });
 });
 

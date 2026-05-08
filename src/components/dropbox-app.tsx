@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  ArrowRight,
   ChevronUp,
   Download,
   File,
@@ -399,6 +400,7 @@ function RemoteBrowser({ account, onDisconnect }: RemoteBrowserProps) {
             config={pipelineConfig}
             parentEntries={entries}
             onNavigateInto={(p) => void load(p)}
+            onParentRefresh={() => void load(path)}
             onPreviewImage={(e) => void openPreview(e)}
             onSaveFile={(e) => void handleSave(e)}
             savingPath={savingPath}
@@ -409,6 +411,7 @@ function RemoteBrowser({ account, onDisconnect }: RemoteBrowserProps) {
                 onOpenFolder={opts.onOpenFolder}
                 onPreview={opts.onPreview}
                 onSave={opts.onSave}
+                promote={opts.promote}
               />
             )}
           />
@@ -455,6 +458,16 @@ type EntryRowProps = {
   onOpenFolder: (path: string) => void;
   onPreview: () => void;
   onSave: () => void;
+  /**
+   * When set, renders a Promote button whose tooltip is the destination
+   * state name. Only present when the entry lives inside a state bucket
+   * with a known successor.
+   */
+  promote?: {
+    targetStateName: string;
+    inFlight: boolean;
+    onClick: () => void;
+  };
 };
 
 function EntryRow({
@@ -463,6 +476,7 @@ function EntryRow({
   onOpenFolder,
   onPreview,
   onSave,
+  promote,
 }: EntryRowProps) {
   const isImage = isDropboxImage(entry);
   const isFolder = entry.kind === "folder";
@@ -496,6 +510,22 @@ function EntryRow({
         <EntryIcon entry={entry} isImage={isImage} />
         <span className="truncate">{entry.name}</span>
       </Button>
+      {promote ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={promote.inFlight}
+          onClick={promote.onClick}
+          aria-label={`Promote ${entry.name} to ${promote.targetStateName}`}
+          title={`Promote to ${promote.targetStateName}`}
+        >
+          <ArrowRight data-icon="inline-start" />
+          <span className="hidden sm:inline">
+            {promote.inFlight ? "Moving…" : promote.targetStateName}
+          </span>
+        </Button>
+      ) : null}
       {!isFolder ? (
         <Button
           type="button"

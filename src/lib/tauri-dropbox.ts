@@ -109,6 +109,31 @@ export function dropboxReadTextFile(path: string, maxBytes?: number) {
   });
 }
 
+/**
+ * Move (or rename) a file or folder. Returns the resulting entry's
+ * metadata. Used by the Promote action to shift an item from one state
+ * folder to its successor; failures (e.g. destination already exists,
+ * source not found, missing scope) come back as exceptions.
+ */
+export function dropboxMove(fromPath: string, toPath: string) {
+  return invoke<DropboxEntry>("dropbox_move_v2", {
+    appKey: dropboxAppKey(),
+    fromPath,
+    toPath,
+  });
+}
+
+/**
+ * Create a new folder. Used by the "create missing state folder"
+ * affordance in the pipeline view. Returns the new folder's metadata.
+ */
+export function dropboxCreateFolder(path: string) {
+  return invoke<DropboxEntry>("dropbox_create_folder_v2", {
+    appKey: dropboxAppKey(),
+    path,
+  });
+}
+
 /** Wrap a temp/preview path so it can be used as an `<img src>`. */
 export function dropboxLocalSrc(localPath: string): string {
   return convertFileSrc(localPath);

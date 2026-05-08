@@ -10,7 +10,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use super::api::{DropboxAccount, DropboxEntry};
 use super::loopback::{accept_one, bind_loopback};
-use super::oauth::{build_authorize_url, AuthorizeRequest, READ_ONLY_SCOPES};
+use super::oauth::{build_authorize_url, AuthorizeRequest, REQUESTED_SCOPES};
 use super::pkce;
 use super::service::{DropboxService, ServiceError};
 use super::tokens::KeyringStore;
@@ -174,6 +174,39 @@ pub async fn dropbox_save_file_to(
         .map_err(ServiceError::into_string)
 }
 
+/// Move (or rename) a file or folder via `/files/move_v2`.
+///
+/// Returns the new entry. Frontend uses this to implement the Promote
+/// action and (eventually) drag-style reorganization.
+#[tauri::command]
+pub async fn dropbox_move_v2(
+    state: State<'_, DropboxState>,
+    app_key: String,
+    from_path: String,
+    to_path: String,
+) -> Result<DropboxEntry, String> {
+    let svc = state.service(&app_key).await;
+    svc.move_path(&from_path, &to_path)
+        .await
+        .map_err(ServiceError::into_string)
+}
+
+/// Create a new folder via `/files/create_folder_v2`.
+///
+/// Returns the new folder's metadata. Used by the "create missing state
+/// folder" affordance in the pipeline view.
+#[tauri::command]
+pub async fn dropbox_create_folder_v2(
+    state: State<'_, DropboxState>,
+    app_key: String,
+    path: String,
+) -> Result<DropboxEntry, String> {
+    let svc = state.service(&app_key).await;
+    svc.create_folder(&path)
+        .await
+        .map_err(ServiceError::into_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,7 +303,7 @@ pub async fn dropbox_connect(
         redirect_uri: &redirect_uri,
         code_challenge: &pkce_pair.challenge,
         state: &state_token,
-        scopes: READ_ONLY_SCOPES,
+        scopes: REQUESTED_SCOPES,
     });
 
     let _ = app.opener().open_url(url.as_str(), None::<&str>);

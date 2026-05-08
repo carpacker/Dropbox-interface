@@ -71,10 +71,12 @@ function renderWith(props: {
   parentPath?: string;
   parentEntries?: DropboxEntry[];
   onNavigateInto?: (path: string) => void;
+  onParentRefresh?: () => void;
   onPreviewImage?: (entry: DropboxEntry) => void;
   onSaveFile?: (entry: DropboxEntry) => void;
   savingPath?: string | null;
   config?: ReturnType<typeof configFixture>;
+  renderEntryRow?: React.ComponentProps<typeof PipelineView>["renderEntryRow"];
 }) {
   const config = props.config ?? configFixture();
   return render(
@@ -83,12 +85,16 @@ function renderWith(props: {
       config={config}
       parentEntries={props.parentEntries ?? []}
       onNavigateInto={props.onNavigateInto ?? (() => {})}
+      onParentRefresh={props.onParentRefresh ?? (() => {})}
       onPreviewImage={props.onPreviewImage ?? (() => {})}
       onSaveFile={props.onSaveFile ?? (() => {})}
       savingPath={props.savingPath ?? null}
-      renderEntryRow={(entry) => (
-        <button data-testid={`row-${entry.path}`}>{entry.name}</button>
-      )}
+      renderEntryRow={
+        props.renderEntryRow ??
+        ((entry) => (
+          <button data-testid={`row-${entry.path}`}>{entry.name}</button>
+        ))
+      }
     />,
   );
 }
@@ -283,6 +289,349 @@ describe("PipelineView — bucket contents", () => {
   });
 });
 
+describe("PipelineView — Promote action", () => {
+  function setupTwoStateFixture(opts: { promotable?: DropboxEntry } = {}) {
+    const file =
+      opts.promotable ??
+      dropboxFile("a.png", "/parent/1__Processing/a.png");
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    const calls: { cmd: string; args: unknown }[] = [];
+    setInvokeHandler("dropbox_list_folder", (args) => {
+      calls.push({ cmd: "dropbox_list_folder", args });
+      const path = (args as { path: string }).path;
+      if (path === "/parent/1__Processing") {
+        return [file];
+      }
+      return [];
+    });
+    return { calls, file };
+  }
+
+  it("renders a Promote button on state-bucket items pointing at the next state", async () => {
+    setupTwoStateFixture();
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+      ],
+      renderEntryRow: (entry, opts) => (
+        <div data-testid={`row-${entry.path}`}>
+          <span>{entry.name}</span>
+          {opts.promote ? (
+            <button
+              type="button"
+              data-testid={`promote-${entry.path}`}
+              onClick={opts.promote.onClick}
+            >
+              {opts.promote.inFlight ? "Moving…" : opts.promote.targetStateName}
+            </button>
+          ) : null}
+        </div>
+      ),
+    });
+
+    await user.click(screen.getByRole("tab", { name: /processing/i }));
+    const btn = await screen.findByTestId(
+      "promote-/parent/1__Processing/a.png",
+    );
+    expect(btn).toHaveTextContent("Ready");
+  });
+
+  it("does not render Promote on Inbox items", async () => {
+    setupTwoStateFixture();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+        dropboxFile("loose.txt", "/parent/loose.txt"),
+      ],
+      renderEntryRow: (entry, opts) => (
+        <div data-testid={`row-${entry.path}`}>
+          {entry.name}
+          {opts.promote ? <span data-testid={`has-promote-${entry.path}`} /> : null}
+        </div>
+      ),
+    });
+    expect(
+      screen.queryByTestId("has-promote-/parent/loose.txt"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not render Promote on the terminal state", async () => {
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    setInvokeHandler("dropbox_list_folder", (args) => {
+      const path = (args as { path: string }).path;
+      if (path === "/parent/3__published") {
+        return [dropboxFile("done.png", "/parent/3__published/done.png")];
+      }
+      return [];
+    });
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [dropboxFolder("3__published")],
+      renderEntryRow: (entry, opts) => (
+        <div data-testid={`row-${entry.path}`}>
+          {entry.name}
+          {opts.promote ? <span data-testid={`has-promote-${entry.path}`} /> : null}
+        </div>
+      ),
+    });
+    await user.click(screen.getByRole("tab", { name: /published/i }));
+    await screen.findByTestId("row-/parent/3__published/done.png");
+    expect(
+      screen.queryByTestId("has-promote-/parent/3__published/done.png"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not render Promote when the destination state folder is missing", async () => {
+    setupTwoStateFixture();
+    const user = userEvent.setup();
+    // Only Processing exists; Ready / Published are missing.
+    renderWith({
+      parentEntries: [dropboxFolder("1__Processing")],
+      renderEntryRow: (entry, opts) => (
+        <div data-testid={`row-${entry.path}`}>
+          {entry.name}
+          {opts.promote ? (
+            <span data-testid={`has-promote-${entry.path}`} />
+          ) : null}
+        </div>
+      ),
+    });
+    await user.click(screen.getByRole("tab", { name: /processing/i }));
+    await screen.findByTestId("row-/parent/1__Processing/a.png");
+    expect(
+      screen.queryByTestId("has-promote-/parent/1__Processing/a.png"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("clicking Promote calls dropbox_move_v2 with the correct paths", async () => {
+    setupTwoStateFixture();
+    const moveSpy = vi.fn((args: unknown) => {
+      expect(args).toMatchObject({
+        fromPath: "/parent/1__Processing/a.png",
+        toPath: "/parent/2__ready/a.png",
+      });
+      return {
+        kind: "file",
+        name: "a.png",
+        path: "/parent/2__ready/a.png",
+        displayPath: "/parent/2__ready/a.png",
+        size: 1,
+        serverModified: null,
+      };
+    });
+    setInvokeHandler("dropbox_move_v2", moveSpy);
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+      ],
+      renderEntryRow: (entry, opts) => (
+        <button
+          type="button"
+          data-testid={`promote-${entry.path}`}
+          disabled={!opts.promote}
+          onClick={() => opts.promote?.onClick()}
+        >
+          Promote
+        </button>
+      ),
+    });
+
+    await user.click(screen.getByRole("tab", { name: /processing/i }));
+    await user.click(
+      await screen.findByTestId("promote-/parent/1__Processing/a.png"),
+    );
+    await waitFor(() => expect(moveSpy).toHaveBeenCalledTimes(1));
+
+    // Undo toast appears
+    expect(
+      await screen.findByLabelText(/move completed/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Moved/i)).toHaveTextContent(/a\.png/);
+  });
+
+  it("Undo reverses the move with another dropbox_move_v2 call", async () => {
+    setupTwoStateFixture();
+    const moveCalls: { fromPath: string; toPath: string }[] = [];
+    setInvokeHandler("dropbox_move_v2", (args) => {
+      moveCalls.push(args as { fromPath: string; toPath: string });
+      return {
+        kind: "file",
+        name: "a.png",
+        path: (args as { toPath: string }).toPath,
+        displayPath: (args as { toPath: string }).toPath,
+        size: 1,
+        serverModified: null,
+      };
+    });
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+      ],
+      renderEntryRow: (entry, opts) => (
+        <button
+          type="button"
+          data-testid={`promote-${entry.path}`}
+          disabled={!opts.promote}
+          onClick={() => opts.promote?.onClick()}
+        >
+          Promote
+        </button>
+      ),
+    });
+
+    await user.click(screen.getByRole("tab", { name: /processing/i }));
+    await user.click(
+      await screen.findByTestId("promote-/parent/1__Processing/a.png"),
+    );
+    await screen.findByLabelText(/move completed/i);
+
+    await user.click(screen.getByRole("button", { name: /undo move/i }));
+    await waitFor(() => expect(moveCalls).toHaveLength(2));
+    expect(moveCalls[0]).toMatchObject({
+      fromPath: "/parent/1__Processing/a.png",
+      toPath: "/parent/2__ready/a.png",
+    });
+    expect(moveCalls[1]).toMatchObject({
+      fromPath: "/parent/2__ready/a.png",
+      toPath: "/parent/1__Processing/a.png",
+    });
+  });
+
+  it("surfaces a move error and leaves the cache intact", async () => {
+    setupTwoStateFixture();
+    setInvokeHandler("dropbox_move_v2", () => {
+      throw new Error("dropbox returned an error: 409 to/conflict");
+    });
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+      ],
+      renderEntryRow: (entry, opts) => (
+        <button
+          type="button"
+          data-testid={`promote-${entry.path}`}
+          disabled={!opts.promote}
+          onClick={() => opts.promote?.onClick()}
+        >
+          Promote
+        </button>
+      ),
+    });
+
+    await user.click(screen.getByRole("tab", { name: /processing/i }));
+    await user.click(
+      await screen.findByTestId("promote-/parent/1__Processing/a.png"),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(/to\/conflict/);
+    // No undo toast
+    expect(screen.queryByLabelText(/move completed/i)).not.toBeInTheDocument();
+  });
+
+  it("dismiss button clears the undo toast", async () => {
+    setupTwoStateFixture();
+    setInvokeHandler("dropbox_move_v2", () => ({
+      kind: "file",
+      name: "a.png",
+      path: "/parent/2__ready/a.png",
+      displayPath: "/parent/2__ready/a.png",
+      size: 1,
+      serverModified: null,
+    }));
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+      ],
+      renderEntryRow: (entry, opts) => (
+        <button
+          type="button"
+          data-testid={`promote-${entry.path}`}
+          disabled={!opts.promote}
+          onClick={() => opts.promote?.onClick()}
+        >
+          Promote
+        </button>
+      ),
+    });
+    await user.click(screen.getByRole("tab", { name: /processing/i }));
+    await user.click(
+      await screen.findByTestId("promote-/parent/1__Processing/a.png"),
+    );
+    await screen.findByLabelText(/move completed/i);
+
+    await user.click(
+      screen.getByRole("button", { name: /dismiss undo notification/i }),
+    );
+    expect(
+      screen.queryByLabelText(/move completed/i),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("PipelineView — Create missing state folder", () => {
+  it("renders a Create folder button per missing state and calls dropbox_create_folder_v2", async () => {
+    setInvokeHandler("dropbox_list_folder", () => []);
+    const createSpy = vi.fn((args) => {
+      expect(args).toMatchObject({ path: "/parent/2__ready" });
+      return {
+        kind: "folder",
+        name: "2__ready",
+        path: "/parent/2__ready",
+        displayPath: "/parent/2__ready",
+        size: null,
+        serverModified: null,
+      };
+    });
+    setInvokeHandler("dropbox_create_folder_v2", createSpy);
+    const onParentRefresh = vi.fn();
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [dropboxFolder("1__Processing")],
+      onParentRefresh,
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent(/2 declared states/);
+    await user.click(
+      screen.getByRole("button", { name: /create folder 2__ready/i }),
+    );
+    await waitFor(() => expect(createSpy).toHaveBeenCalledTimes(1));
+    expect(onParentRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces create-folder errors", async () => {
+    setInvokeHandler("dropbox_list_folder", () => []);
+    setInvokeHandler("dropbox_create_folder_v2", () => {
+      throw new Error("dropbox returned an error: 409 path/conflict");
+    });
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [dropboxFolder("1__Processing")],
+    });
+    await user.click(
+      screen.getByRole("button", { name: /create folder 2__ready/i }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /path\/conflict/,
+    );
+  });
+});
+
 describe("PipelineView — selection persistence across parent changes", () => {
   it("resets the cached state listings when parentPath changes", async () => {
     const handler = vi.fn((args: unknown) => {
@@ -309,6 +658,7 @@ describe("PipelineView — selection persistence across parent changes", () => {
         config={config}
         parentEntries={[dropboxFolder("1__Processing", "/other/1__Processing")]}
         onNavigateInto={() => {}}
+        onParentRefresh={() => {}}
         onPreviewImage={() => {}}
         onSaveFile={() => {}}
         savingPath={null}

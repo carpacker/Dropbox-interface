@@ -5,10 +5,18 @@ pub const AUTHORIZE_URL: &str = "https://www.dropbox.com/oauth2/authorize";
 pub const TOKEN_URL: &str = "https://api.dropboxapi.com/oauth2/token";
 pub const REVOKE_URL: &str = "https://api.dropboxapi.com/2/auth/token/revoke";
 
-/// Read-only scopes this app currently asks for.
-pub const READ_ONLY_SCOPES: &[&str] = &[
+/// Scopes the app requests at OAuth time.
+///
+/// Read scopes power browsing, thumbnails, and file download/preview.
+/// `files.metadata.write` lets us rename/move/delete files + folders and
+/// create new folders — required for the Promote action and the
+/// "create missing state folder" affordance. We deliberately do NOT
+/// request `files.content.write` (upload) because the app never
+/// originates new file content from the renderer.
+pub const REQUESTED_SCOPES: &[&str] = &[
     "account_info.read",
     "files.metadata.read",
+    "files.metadata.write",
     "files.content.read",
 ];
 
@@ -93,7 +101,7 @@ mod tests {
             redirect_uri: "http://127.0.0.1:53682/callback",
             code_challenge: "challenge",
             state: "xyz",
-            scopes: READ_ONLY_SCOPES,
+            scopes: REQUESTED_SCOPES,
         });
         assert_eq!(url.scheme(), "https");
         assert_eq!(url.host_str(), Some("www.dropbox.com"));
@@ -107,7 +115,7 @@ mod tests {
             redirect_uri: "http://127.0.0.1:53682/callback",
             code_challenge: "the-challenge",
             state: "the-state",
-            scopes: READ_ONLY_SCOPES,
+            scopes: REQUESTED_SCOPES,
         });
         let q = query_map(&url);
         assert_eq!(q.get("client_id").map(String::as_str), Some("abc"));
@@ -131,7 +139,10 @@ mod tests {
         );
         assert_eq!(
             q.get("scope").map(String::as_str),
-            Some("account_info.read files.metadata.read files.content.read")
+            Some(
+                "account_info.read files.metadata.read \
+                 files.metadata.write files.content.read"
+            )
         );
     }
 
@@ -142,7 +153,7 @@ mod tests {
             redirect_uri: "http://127.0.0.1:53682/callback?x=1",
             code_challenge: "a+b/c=",
             state: "with spaces",
-            scopes: READ_ONLY_SCOPES,
+            scopes: REQUESTED_SCOPES,
         });
         let raw = url.as_str();
         // values must round-trip through query_pairs; that itself is the

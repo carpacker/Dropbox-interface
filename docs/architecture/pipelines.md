@@ -8,14 +8,24 @@ from its current state folder to the next one in pipeline order.
 
 ## Status
 
-**Read-only v1 in place.** Model layer + Dropbox source + read-only UI
-have all landed. When you navigate into a Dropbox folder that contains a
-valid `.dropbox-interface.json`, `DropboxApp` switches automatically to
-`PipelineView`; otherwise it falls back to the flat browser. Invalid
-configs surface a non-blocking warning banner and do not break browsing.
+**Promote + Create-folder shipped.** Model layer + Dropbox source +
+read UI + write actions are all in place:
 
-Write operations (move, delete, rename) and the **Promote** action are
-the next round.
+- Auto-discovery: when you navigate into a Dropbox folder that
+  contains a valid `.dropbox-interface.json`, `DropboxApp` switches
+  automatically to `PipelineView`; otherwise it falls back to the flat
+  browser.
+- Promote: each item inside a state bucket gets a Promote button when
+  the bucket has a successor whose folder is present. Clicking it
+  moves the item via `/files/move_v2`, refreshes both source and
+  destination buckets, and shows an Undo toast (8s auto-dismiss; one
+  click reverses the move via another `move_v2`).
+- Create-folder: each missing-state warning row gets a "Create
+  folder" button that calls `/files/create_folder_v2` for the
+  parent-relative path and refreshes the parent listing on success.
+
+`delete_v2` is intentionally not shipped in this round — see
+THREAT_MODEL §D8c.
 
 ## Why this exists
 
@@ -178,16 +188,21 @@ Done:
    config on every navigation. Valid config → `PipelineView`, invalid
    config → flat browser + issue banner, missing config → flat browser.
 
+5. ✅ **Promote action.** `dropbox_move_v2` + Promote button + Undo
+   toast.
+6. ✅ **`dropbox_create_folder_v2`** for the missing-state affordance.
+   `delete_v2` deferred — see THREAT_MODEL §D8c.
+
 Next:
 
-5. **Promote action.** `dropbox_move_v2` Tauri command, "Promote" button
-   on each entry inside a state bucket; uses `nextState` to compute the
-   target folder. Refresh both the source and destination listings on
-   success.
-6. **Other write ops.** `dropbox_delete_v2`, `dropbox_create_folder_v2`
-   (for adding a new state folder when a `missing` warning fires).
-7. **Local backend** (optional, later). Mirror `DropboxPipelineSource`
-   for the local FS so the existing `FileBrowser` can host pipelines too.
+7. **`delete_v2`** (when there's a clear use case). Behind a confirm.
+8. **Local backend** (optional). Mirror `DropboxPipelineSource` for
+   the local FS so the existing `FileBrowser` can host pipelines too.
+9. **Drag-and-drop promote**. Drag an entry between buckets in the
+   strip. Uses the same `move_path` plumbing.
+10. **Inbox → first state** quick action. Currently Inbox items have
+    no Promote target; a "File into <first-state>" verb would let
+    users sweep inbox into the pipeline without opening the flat view.
 
 ## Updating this doc
 

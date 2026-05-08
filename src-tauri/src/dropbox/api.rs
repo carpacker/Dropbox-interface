@@ -52,45 +52,51 @@ pub(crate) struct RawEntry {
     pub server_modified: Option<String>,
 }
 
+/// Convert a single raw API entry to our typed shape, or `None` if the
+/// `.tag` is anything other than `file` or `folder` (e.g. `deleted`).
+pub(crate) fn entry_from_raw(r: RawEntry) -> Option<DropboxEntry> {
+    let kind = match r.tag.as_str() {
+        "folder" => EntryKind::Folder,
+        "file" => EntryKind::File,
+        _ => return None,
+    };
+    let path = r.path_lower.unwrap_or_default();
+    let display_path = r.path_display.unwrap_or_else(|| path.clone());
+    let size = match kind {
+        EntryKind::File => r.size,
+        EntryKind::Folder => None,
+    };
+    let server_modified = match kind {
+        EntryKind::File => r.server_modified,
+        EntryKind::Folder => None,
+    };
+    Some(DropboxEntry {
+        kind,
+        name: r.name,
+        path,
+        display_path,
+        size,
+        server_modified,
+    })
+}
+
 /// Convert raw API entries to our typed shape, dropping deleted/unknown tags
 /// and sorting folders-first then by case-insensitive name.
 pub(crate) fn entries_from_raw(raw: Vec<RawEntry>) -> Vec<DropboxEntry> {
-    let mut out: Vec<DropboxEntry> = raw
-        .into_iter()
-        .filter_map(|r| {
-            let kind = match r.tag.as_str() {
-                "folder" => EntryKind::Folder,
-                "file" => EntryKind::File,
-                _ => return None,
-            };
-            let path = r.path_lower.unwrap_or_default();
-            let display_path = r.path_display.unwrap_or_else(|| path.clone());
-            let size = match kind {
-                EntryKind::File => r.size,
-                EntryKind::Folder => None,
-            };
-            let server_modified = match kind {
-                EntryKind::File => r.server_modified,
-                EntryKind::Folder => None,
-            };
-            Some(DropboxEntry {
-                kind,
-                name: r.name,
-                path,
-                display_path,
-                size,
-                server_modified,
-            })
-        })
-        .collect();
-
+    let mut out: Vec<DropboxEntry> = raw.into_iter().filter_map(entry_from_raw).collect();
     out.sort_by(|a, b| match (a.kind, b.kind) {
         (EntryKind::Folder, EntryKind::File) => std::cmp::Ordering::Less,
         (EntryKind::File, EntryKind::Folder) => std::cmp::Ordering::Greater,
         _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
-
     out
+}
+
+/// Shared response shape for `/files/move_v2` and `/files/create_folder_v2`,
+/// both of which return `{ "metadata": <RawEntry> }`.
+#[derive(Debug, Deserialize)]
+pub(crate) struct MetadataEnvelope {
+    pub metadata: RawEntry,
 }
 
 #[derive(Debug, Deserialize)]
