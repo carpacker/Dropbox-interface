@@ -1,4 +1,12 @@
-import { ArrowLeft, Cloud, FolderOpen, History, MonitorCog } from "lucide-react";
+import {
+  ArrowLeft,
+  Cloud,
+  FolderOpen,
+  History,
+  MonitorCog,
+  Pin,
+  PinOff,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { DesktopWorkspaceApp } from "@/components/desktop-workspace-app";
@@ -15,8 +23,10 @@ import {
 } from "@/components/ui/card";
 import {
   getRecentPipelines,
+  setPinned,
   type RecentPipeline,
 } from "@/lib/pipeline-recents";
+import { cn } from "@/lib/utils";
 
 type AppId = "dashboard" | "workspace" | "photos" | "dropbox";
 
@@ -152,11 +162,17 @@ function App() {
                   className="flex flex-col gap-2"
                 >
                   {recents.map((r) => (
-                    <li key={r.path}>
+                    <li
+                      key={r.path}
+                      className={cn(
+                        "flex items-stretch gap-1 rounded-lg border bg-background transition hover:border-foreground/40",
+                        r.pinned && "border-foreground/30",
+                      )}
+                    >
                       <button
                         type="button"
                         onClick={() => openDropboxAt(r.path)}
-                        className="flex w-full items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2 text-left transition hover:border-foreground/40"
+                        className="flex min-w-0 flex-1 items-center justify-between gap-3 px-3 py-2 text-left"
                       >
                         <span className="flex min-w-0 flex-col">
                           <span className="truncate text-sm font-medium">
@@ -169,6 +185,26 @@ function App() {
                         <span className="shrink-0 text-xs text-muted-foreground">
                           {formatRelativeTime(r.visitedAt, Date.now())}
                         </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPinned(r.path, !r.pinned);
+                          setRecents(getRecentPipelines());
+                        }}
+                        aria-label={
+                          r.pinned
+                            ? `Unpin ${r.name}`
+                            : `Pin ${r.name}`
+                        }
+                        aria-pressed={r.pinned ? "true" : "false"}
+                        className={cn(
+                          "flex shrink-0 items-center justify-center px-3 transition hover:bg-muted",
+                          r.pinned && "text-foreground",
+                          !r.pinned && "text-muted-foreground",
+                        )}
+                      >
+                        {r.pinned ? <Pin /> : <PinOff />}
                       </button>
                     </li>
                   ))}

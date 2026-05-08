@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setInvokeHandler } from "@/test/tauri-core-mock";
 import { parseConfig } from "@/lib/pipeline/schema";
@@ -852,6 +852,384 @@ describe("PipelineView — drag-and-drop between buckets", () => {
     fireEvent.drop(target, { dataTransfer: dt });
     await new Promise((r) => setTimeout(r, 30));
     expect(moveSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("PipelineView — Pin button", () => {
+  it("toggles pinned status for the current pipeline", async () => {
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    setInvokeHandler("dropbox_list_folder", () => []);
+
+    // Seed the recents list so setPinned has something to mutate.
+    localStorage.setItem(
+      "dropbox-interface:recent-pipelines",
+      JSON.stringify([
+        { path: "/parent", name: "Test pipeline", visitedAt: 1 },
+      ]),
+    );
+
+    const user = userEvent.setup();
+    renderWith({ parentEntries: [dropboxFolder("1__Processing")] });
+
+    const pinBtn = screen.getByRole("button", { name: /pin pipeline/i });
+    expect(pinBtn).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(pinBtn);
+    expect(
+      screen.getByRole("button", { name: /unpin pipeline/i }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    const stored = JSON.parse(
+      localStorage.getItem("dropbox-interface:recent-pipelines")!,
+    );
+    expect(stored[0]).toMatchObject({ path: "/parent", pinned: true });
+  });
+});
+
+describe("PipelineView — Bulk Promote", () => {
+  function setupBulkFixture() {
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    const items = [
+      dropboxFile("a.png", "/parent/a.png"),
+      dropboxFile("b.png", "/parent/b.png"),
+      dropboxFile("c.png", "/parent/c.png"),
+    ];
+    setInvokeHandler("dropbox_list_folder", () => []);
+    return items;
+  }
+
+  function checkbox(entry: DropboxEntry) {
+    return screen.getByRole("checkbox", {
+      name: new RegExp(`select ${entry.name.replace(/\./g, "\\.")}`, "i"),
+    });
+  }
+
+  it("checkboxes toggle selection state and bulk toolbar reflects count", async () => {
+    const items = setupBulkFixture();
+    const user = userEvent.setup();
+
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+        ...items,
+      ],
+      renderEntryRow: (entry, opts) => (
+        <div data-testid={`row-${entry.path}`}>
+          {opts.select ? (
+            <input
+              type="checkbox"
+              aria-label={`Select ${entry.name}`}
+              checked={opts.select.selected}
+              onChange={opts.select.onToggle}
+            />
+          ) : null}
+          <span>{entry.name}</span>
+        </div>
+      ),
+    });
+
+    // Inbox is selected by default; pick two items.
+    await user.click(checkbox(items[0]));
+    await user.click(checkbox(items[1]));
+
+    const toolbar = screen.getByRole("toolbar", { name: /bulk actions/i });
+    expect(toolbar).toHaveTextContent(/2/);
+    // Promote target is the first state.
+    expect(
+      within(toolbar).getByRole("button", { name: /promote 2 to processing/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("Clear button drops the selection", async () => {
+    const items = setupBulkFixture();
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+        ...items,
+      ],
+      renderEntryRow: (entry, opts) => (
+        <div data-testid={`row-${entry.path}`}>
+          {opts.select ? (
+            <input
+              type="checkbox"
+              aria-label={`Select ${entry.name}`}
+              checked={opts.select.selected}
+              onChange={opts.select.onToggle}
+            />
+          ) : null}
+          <span>{entry.name}</span>
+        </div>
+      ),
+    });
+
+    await user.click(checkbox(items[0]));
+    await user.click(checkbox(items[1]));
+    await user.click(screen.getByRole("button", { name: /clear selection/i }));
+    expect(
+      screen.queryByRole("toolbar", { name: /bulk actions/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("clicking bulk Promote moves all selected items in parallel and shows a single toast", async () => {
+    const items = setupBulkFixture();
+    const moves: { fromPath: string; toPath: string }[] = [];
+    setInvokeHandler("dropbox_move_v2", (args) => {
+      const a = args as { fromPath: string; toPath: string };
+      moves.push(a);
+      return {
+        kind: "file",
+        name: a.toPath.split("/").pop(),
+        path: a.toPath,
+        displayPath: a.toPath,
+        size: 1,
+        serverModified: null,
+      };
+    });
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+        ...items,
+      ],
+      renderEntryRow: (entry, opts) => (
+        <div data-testid={`row-${entry.path}`}>
+          {opts.select ? (
+            <input
+              type="checkbox"
+              aria-label={`Select ${entry.name}`}
+              checked={opts.select.selected}
+              onChange={opts.select.onToggle}
+            />
+          ) : null}
+          <span>{entry.name}</span>
+        </div>
+      ),
+    });
+
+    await user.click(checkbox(items[0]));
+    await user.click(checkbox(items[1]));
+
+    await user.click(
+      screen.getByRole("button", { name: /promote 2 to processing/i }),
+    );
+
+    await waitFor(() => expect(moves).toHaveLength(2));
+    const toPaths = moves.map((m) => m.toPath).sort();
+    expect(toPaths).toEqual([
+      "/parent/1__Processing/a.png",
+      "/parent/1__Processing/b.png",
+    ]);
+
+    // Single batch undo toast for the 2 successful moves.
+    const toast = await screen.findByLabelText(/move completed/i);
+    expect(toast).toHaveTextContent(/2 items/);
+    expect(toast).toHaveTextContent(/Processing/);
+  });
+
+  it("partial failure surfaces an error count and still pops a toast for the successful moves", async () => {
+    const items = setupBulkFixture();
+    let callIdx = 0;
+    setInvokeHandler("dropbox_move_v2", (args) => {
+      callIdx += 1;
+      if (callIdx === 2) {
+        throw new Error("dropbox returned an error: 409 to/conflict");
+      }
+      const a = args as { toPath: string };
+      return {
+        kind: "file",
+        name: a.toPath.split("/").pop(),
+        path: a.toPath,
+        displayPath: a.toPath,
+        size: 1,
+        serverModified: null,
+      };
+    });
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFolder("2__ready"),
+        ...items,
+      ],
+      renderEntryRow: (entry, opts) => (
+        <div data-testid={`row-${entry.path}`}>
+          {opts.select ? (
+            <input
+              type="checkbox"
+              aria-label={`Select ${entry.name}`}
+              checked={opts.select.selected}
+              onChange={opts.select.onToggle}
+            />
+          ) : null}
+          <span>{entry.name}</span>
+        </div>
+      ),
+    });
+
+    await user.click(checkbox(items[0]));
+    await user.click(checkbox(items[1]));
+    await user.click(
+      screen.getByRole("button", { name: /promote 2 to processing/i }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /1 of 2 moves failed/i,
+    );
+    // Successful one still goes into the undo toast (single-move text).
+    expect(
+      await screen.findByLabelText(/move completed/i),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("PipelineView — Notes editor", () => {
+  beforeEach(() => {
+    localStorage.removeItem("dropbox-interface:pipeline-notes");
+  });
+
+  function rowWithNoteSlot(entry: DropboxEntry, opts: {
+    note?: { hasNote: boolean; onClick: () => void };
+  }) {
+    return (
+      <div data-testid={`row-${entry.path}`}>
+        <span>{entry.name}</span>
+        {opts.note ? (
+          <>
+            <button
+              type="button"
+              data-testid={`open-note-${entry.path}`}
+              onClick={opts.note.onClick}
+            >
+              note
+            </button>
+            {opts.note.hasNote ? (
+              <span data-testid={`has-note-${entry.path}`} />
+            ) : null}
+          </>
+        ) : null}
+      </div>
+    );
+  }
+
+  it("opens the editor modal when a row's note button fires onClick", async () => {
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    setInvokeHandler("dropbox_list_folder", () => []);
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFile("loose.txt", "/parent/loose.txt"),
+      ],
+      renderEntryRow: (entry, opts) => rowWithNoteSlot(entry, opts),
+    });
+
+    await user.click(screen.getByTestId("open-note-/parent/loose.txt"));
+    const dialog = await screen.findByRole("dialog", { name: /note: loose\.txt/i });
+    expect(dialog).toBeInTheDocument();
+  });
+
+  it("Save persists the note to localStorage and the row gets a has-note indicator on next open", async () => {
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    setInvokeHandler("dropbox_list_folder", () => []);
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFile("loose.txt", "/parent/loose.txt"),
+      ],
+      renderEntryRow: (entry, opts) => rowWithNoteSlot(entry, opts),
+    });
+
+    await user.click(screen.getByTestId("open-note-/parent/loose.txt"));
+    await user.type(
+      screen.getByRole("textbox", { name: /note body/i }),
+      "Looks great",
+    );
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // Modal closes, indicator dot shows.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: /note: loose\.txt/i }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByTestId("has-note-/parent/loose.txt"),
+    ).toBeInTheDocument();
+    // Underlying storage reflects the save.
+    const stored = JSON.parse(
+      localStorage.getItem("dropbox-interface:pipeline-notes")!,
+    );
+    expect(stored["/parent/loose.txt"]).toMatchObject({
+      body: "Looks great",
+    });
+  });
+
+  it("Cancel discards the textarea contents", async () => {
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    setInvokeHandler("dropbox_list_folder", () => []);
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFile("loose.txt", "/parent/loose.txt"),
+      ],
+      renderEntryRow: (entry, opts) => rowWithNoteSlot(entry, opts),
+    });
+
+    await user.click(screen.getByTestId("open-note-/parent/loose.txt"));
+    await user.type(
+      screen.getByRole("textbox", { name: /note body/i }),
+      "tentative",
+    );
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: /note/i }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      localStorage.getItem("dropbox-interface:pipeline-notes"),
+    ).toBeNull();
+  });
+
+  it("Esc closes the editor without saving", async () => {
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    setInvokeHandler("dropbox_list_folder", () => []);
+
+    const user = userEvent.setup();
+    renderWith({
+      parentEntries: [
+        dropboxFolder("1__Processing"),
+        dropboxFile("loose.txt", "/parent/loose.txt"),
+      ],
+      renderEntryRow: (entry, opts) => rowWithNoteSlot(entry, opts),
+    });
+
+    await user.click(screen.getByTestId("open-note-/parent/loose.txt"));
+    await user.type(
+      screen.getByRole("textbox", { name: /note body/i }),
+      "drafty",
+    );
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: /note/i }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      localStorage.getItem("dropbox-interface:pipeline-notes"),
+    ).toBeNull();
   });
 });
 

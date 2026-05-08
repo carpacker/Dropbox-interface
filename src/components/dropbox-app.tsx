@@ -7,6 +7,7 @@ import {
   Folder,
   ImageIcon,
   LogOut,
+  MessageSquare,
   Plug,
   RefreshCw,
   X,
@@ -432,6 +433,8 @@ function RemoteBrowser({
                 onPreview={opts.onPreview}
                 onSave={opts.onSave}
                 promote={opts.promote}
+                select={opts.select}
+                note={opts.note}
               />
             )}
           />
@@ -488,6 +491,19 @@ type EntryRowProps = {
     inFlight: boolean;
     onClick: () => void;
   };
+  /**
+   * When set, renders a leading checkbox for bulk selection. Only the
+   * pipeline view threads this; the flat browser leaves it undefined.
+   */
+  select?: {
+    selected: boolean;
+    onToggle: () => void;
+  };
+  /** Local-only review note state for this row. */
+  note?: {
+    hasNote: boolean;
+    onClick: () => void;
+  };
 };
 
 function EntryRow({
@@ -497,6 +513,8 @@ function EntryRow({
   onPreview,
   onSave,
   promote,
+  select,
+  note,
 }: EntryRowProps) {
   const isImage = isDropboxImage(entry);
   const isFolder = entry.kind === "folder";
@@ -513,6 +531,15 @@ function EntryRow({
 
   return (
     <div className="flex items-center gap-1.5">
+      {select ? (
+        <input
+          type="checkbox"
+          checked={select.selected}
+          onChange={select.onToggle}
+          aria-label={`Select ${entry.name}`}
+          className="ml-1 h-4 w-4 shrink-0 cursor-pointer"
+        />
+      ) : null}
       <Button
         type="button"
         variant="ghost"
@@ -544,6 +571,31 @@ function EntryRow({
           <span className="hidden sm:inline">
             {promote.inFlight ? "Moving…" : promote.targetStateName}
           </span>
+        </Button>
+      ) : null}
+      {note ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          onClick={note.onClick}
+          aria-label={
+            note.hasNote
+              ? `Edit note for ${entry.name}`
+              : `Add note for ${entry.name}`
+          }
+          aria-pressed={note.hasNote ? "true" : "false"}
+          title={note.hasNote ? "Edit note" : "Add note"}
+          className="relative"
+        >
+          <MessageSquare data-icon="inline-start" />
+          {note.hasNote ? (
+            <span
+              data-testid={`note-indicator-${entry.path}`}
+              aria-hidden="true"
+              className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-foreground"
+            />
+          ) : null}
         </Button>
       ) : null}
       {!isFolder ? (

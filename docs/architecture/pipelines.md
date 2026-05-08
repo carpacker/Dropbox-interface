@@ -8,29 +8,41 @@ from its current state folder to the next one in pipeline order.
 
 ## Status
 
-**Workflow round shipped.** Model layer + Dropbox source + UI +
-write actions + workflow polish are all in place:
+**Review-day round shipped.** On top of the previous workflow round,
+the team can now run the actual review verbs without leaving the
+pipeline view:
 
 - **Auto-discovery.** A folder containing
   `.dropbox-interface.json` swaps `DropboxApp` into `PipelineView`;
   otherwise the flat browser.
 - **Promote** from a state bucket → next state, or from **Inbox** →
   first state. Click the button or drag the row onto another
-  bucket chip — both routes land in the same `move_path` plumbing.
-- **Drag-and-drop.** Each row is `draggable` and emits a payload
-  containing `{ path, name, source: BucketRef }`; bucket chips are
-  `dragOver` / `drop` targets and fire the same `performMove` the
-  Promote button does. Same-bucket drops are no-ops; malformed
-  payloads are ignored defensively.
-- **Undo toast** appears after every successful move (button or
-  drag). 8s auto-dismiss, one-click reverse.
+  bucket chip — both routes land in the same `performMove`
+  plumbing.
+- **Bulk Promote.** Each row carries a checkbox; selection is kept
+  per-bucket so you can flip between buckets without losing it.
+  When ≥1 item is selected, a toolbar above the list shows
+  `Promote N to <next>` plus Clear. Bulk moves run in parallel
+  (`Promise.allSettled`); partial failure surfaces a count but
+  successful moves still queue up under a single batch Undo entry.
+- **Drag-and-drop.** Same plumbing as button-Promote.
+- **Undo toast** is now batch-aware: `UndoableMove.moves[]` always
+  has at least one entry; the toast text adapts (single vs N items).
+  Reversal also uses `Promise.allSettled` so partial undo failures
+  are reported without silently leaving items behind.
+- **Pinning.** `pipeline-recents` gained a per-entry `pinned` flag
+  that's never evicted by the unpinned cap. The dashboard card
+  shows pinned rows first (with a stronger border) and offers a
+  pin toggle per row; the pipeline view itself has a pin button in
+  the header so you can flag a pipeline you're actively reviewing.
+- **Local-only notes.** `pipeline-notes.ts` (new) keeps
+  per-row review notes in `localStorage`, keyed by Dropbox path. A
+  Note button on each row opens a small modal editor; saving an
+  empty note clears it. **Local to each user's machine** — see
+  THREAT_MODEL §D8d for why we didn't request
+  `files.content.write` to round-trip notes through Dropbox.
 - **Create-folder** affordance on each missing-state warning row.
-- **Recent pipelines.** `src/lib/pipeline-recents.ts` is a
-  localStorage MRU (5-cap, deduped by path) that `DropboxApp`
-  populates whenever a valid config loads. The dashboard surfaces
-  the list as a quick-launch card; clicking jumps straight into
-  the Dropbox app at the recent's path via the new
-  `DropboxApp.initialPath` prop.
+- **Recent pipelines** quick-launch card on the dashboard.
 
 `delete_v2` is intentionally still not shipped — see THREAT_MODEL §D8c.
 
@@ -204,14 +216,22 @@ Done:
    Inbox-as-target (un-file an item back to the parent root).
 9. ✅ **Recent pipelines** quick-launch card on the dashboard
    (`pipeline-recents.ts` + `DropboxApp.initialPath`).
+10. ✅ **Pinning** for recents (per-entry `pinned` flag, dashboard
+    + in-pipeline-view toggle).
+11. ✅ **Bulk Promote** (per-bucket selection, parallel moves with
+    `Promise.allSettled`, batch Undo).
+12. ✅ **Local-only notes** keyed by Dropbox path
+    (`pipeline-notes.ts` + Note button + editor modal).
 
 Next:
 
-10. **`delete_v2`** (when there's a clear use case). Behind a confirm.
-11. **Local backend** (optional). Mirror `DropboxPipelineSource` for
+13. **`delete_v2`** (when there's a clear use case). Behind a confirm.
+14. **Team-shared notes** if/when policy flips on
+    `files.content.write` — the helper is shaped so the storage
+    backend can swap from `localStorage` to a Dropbox sidecar
+    file (`.dropbox-interface-notes.json`) without touching the UI.
+15. **Local backend** (optional). Mirror `DropboxPipelineSource` for
     the local FS so the existing `FileBrowser` can host pipelines too.
-12. **Pinning recents** so important pipelines don't get pushed off the
-    list by routine browsing.
 
 ## Updating this doc
 

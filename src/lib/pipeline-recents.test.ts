@@ -4,7 +4,8 @@ import {
   addRecentPipeline,
   clearRecentPipelines,
   getRecentPipelines,
-  MAX_RECENT_PIPELINES,
+  MAX_UNPINNED_RECENTS,
+  setPinned,
 } from "./pipeline-recents";
 
 beforeEach(() => {
@@ -40,10 +41,26 @@ describe("getRecentPipelines", () => {
         { path: "/D", name: "D", visitedAt: 4 },
       ]),
     );
-    expect(getRecentPipelines().map((r) => r.path)).toEqual(["/A", "/D"]);
+    // MRU-first; both /A and /D survive, /D is newer.
+    expect(getRecentPipelines().map((r) => r.path)).toEqual(["/D", "/A"]);
   });
 
-  it("returns at most MAX_RECENT_PIPELINES entries even if storage has more", () => {
+  it("ignores entries with non-boolean pinned values", () => {
+    localStorage.setItem(
+      "dropbox-interface:recent-pipelines",
+      JSON.stringify([
+        { path: "/A", name: "A", visitedAt: 1, pinned: "yes" }, // bad
+        { path: "/B", name: "B", visitedAt: 2, pinned: true },
+      ]),
+    );
+    const out = getRecentPipelines();
+    expect(out.map((r) => r.path)).toEqual(["/B"]);
+  });
+
+  it("returns all stored entries when there are no pinned entries", () => {
+    // Reading is no longer pre-capped (cap happens on write); ensure
+    // legacy storage with extra entries still returns them — pinning
+    // is unbounded by design.
     const stored = Array.from({ length: 10 }, (_, i) => ({
       path: `/p${i}`,
       name: `P${i}`,
@@ -53,7 +70,9 @@ describe("getRecentPipelines", () => {
       "dropbox-interface:recent-pipelines",
       JSON.stringify(stored),
     );
-    expect(getRecentPipelines()).toHaveLength(MAX_RECENT_PIPELINES);
+    // Read returns whatever was stored (no read-time cap so user
+    // who added MAX+ pinned items doesn't lose them on next launch).
+    expect(getRecentPipelines()).toHaveLength(10);
   });
 
   it("survives a getItem that throws", () => {
@@ -94,13 +113,26 @@ describe("addRecentPipeline", () => {
     });
   });
 
-  it("caps the list at MAX_RECENT_PIPELINES", () => {
-    for (let i = 0; i < MAX_RECENT_PIPELINES + 3; i++) {
+  it("caps the unpinned section at MAX_UNPINNED_RECENTS", () => {
+    for (let i = 0; i < MAX_UNPINNED_RECENTS + 3; i++) {
       addRecentPipeline({ path: `/p${i}`, name: `P${i}` }, () => i);
     }
     const recents = getRecentPipelines();
-    expect(recents).toHaveLength(MAX_RECENT_PIPELINES);
-    expect(recents[0].path).toBe(`/p${MAX_RECENT_PIPELINES + 2}`);
+    expect(recents).toHaveLength(MAX_UNPINNED_RECENTS);
+    expect(recents[0].path).toBe(`/p${MAX_UNPINNED_RECENTS + 2}`);
+  });
+
+  it("preserves pinned status across a re-add", () => {
+    addRecentPipeline({ path: "/A", name: "A" }, () => 1);
+    setPinned("/A", true);
+    addRecentPipeline({ path: "/A", name: "A v2" }, () => 99);
+    const recents = getRecentPipelines();
+    expect(recents[0]).toMatchObject({
+      path: "/A",
+      name: "A v2",
+      visitedAt: 99,
+      pinned: true,
+    });
   });
 
   it("does not throw when setItem rejects (e.g. quota)", () => {
@@ -120,6 +152,68 @@ describe("addRecentPipeline", () => {
     addRecentPipeline({ path: "/A", name: "A" });
     expect(getRecentPipelines()[0].visitedAt).toBe(42);
     spy.mockRestore();
+  });
+});
+
+describe("setPinned + sort order", () => {
+  it("sorts pinned entries before unpinned entries", () => {
+    addRecentPipeline({ path: "/A", name: "A" }, () => 1);
+    addRecentPipeline({ path: "/B", name: "B" }, () => 2);
+    addRecentPipeline({ path: "/C", name: "C" }, () => 3);
+    // /A is older but pinned — should bubble to the top.
+    setPinned("/A", true);
+    expect(getRecentPipelines().map((r) => r.path)).toEqual(["/A", "/C", "/B"]);
+  });
+
+  it("sorts multiple pinned entries by visitedAt within the pinned section", () => {
+    addRecentPipeline({ path: "/A", name: "A" }, () => 10);
+    addRecentPipeline({ path: "/B", name: "B" }, () => 20);
+    setPinned("/A", true);
+    setPinned("/B", true);
+    expect(getRecentPipelines().map((r) => r.path)).toEqual(["/B", "/A"]);
+  });
+
+  it("pinned entries are never evicted by the unpinned cap", () => {
+    addRecentPipeline({ path: "/pinned", name: "Pinned" }, () => 0);
+    setPinned("/pinned", true);
+    // Push a wave of unpinned entries; pinned should stay.
+    for (let i = 0; i < MAX_UNPINNED_RECENTS + 5; i++) {
+      addRecentPipeline({ path: `/u${i}`, name: `U${i}` }, () => i + 1);
+    }
+    const recents = getRecentPipelines();
+    expect(recents.find((r) => r.path === "/pinned")).toBeDefined();
+    // Total length: 1 pinned + cap-many unpinned.
+    expect(recents).toHaveLength(1 + MAX_UNPINNED_RECENTS);
+  });
+
+  it("unpinning re-subjects an entry to the cap", () => {
+    addRecentPipeline({ path: "/keep", name: "Keep" }, () => 0);
+    setPinned("/keep", true);
+    for (let i = 0; i < MAX_UNPINNED_RECENTS; i++) {
+      addRecentPipeline({ path: `/u${i}`, name: `U${i}` }, () => i + 1);
+    }
+    setPinned("/keep", false);
+    // Now /keep is unpinned and was the oldest (visitedAt: 0); the
+    // unpinned cap should drop it on the next write.
+    addRecentPipeline({ path: "/new", name: "New" }, () => 1000);
+    expect(
+      getRecentPipelines().find((r) => r.path === "/keep"),
+    ).toBeUndefined();
+  });
+
+  it("setPinned is a no-op for paths that have never been visited", () => {
+    setPinned("/never-seen", true);
+    expect(getRecentPipelines()).toEqual([]);
+  });
+
+  it("setPinned strips the pinned field instead of storing pinned: false", () => {
+    addRecentPipeline({ path: "/A", name: "A" }, () => 1);
+    setPinned("/A", true);
+    setPinned("/A", false);
+    const stored = JSON.parse(
+      localStorage.getItem("dropbox-interface:recent-pipelines")!,
+    );
+    expect(stored[0]).not.toHaveProperty("pinned");
   });
 });
 

@@ -101,12 +101,14 @@ describe("App — Recent pipelines card", () => {
     render(<App />);
 
     const list = screen.getByLabelText(/recent pipelines/i);
-    const items = within(list).getAllByRole("button");
+    // Two row-body buttons (one per recent) + two pin toggles.
+    const items = within(list).getAllByRole("listitem");
     expect(items).toHaveLength(2);
-    // MRU first.
+    // MRU first: Social queue (2000) before Foo review (1000).
     expect(items[0]).toHaveTextContent(/Social queue/);
     expect(items[0]).toHaveTextContent(/\/SOCIAL\/queue/);
     expect(items[1]).toHaveTextContent(/Foo review/);
+    expect(within(items[0]).getByRole("button", { name: /pin social queue/i })).toBeInTheDocument();
   });
 
   it("clicking a recent navigates straight into the Dropbox app at that path", async () => {
@@ -130,15 +132,36 @@ describe("App — Recent pipelines card", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(
-      screen.getByRole("button", { name: /Foo review/ }),
-    );
+    // Click the row body, not the pin toggle.
+    const list = screen.getByLabelText(/recent pipelines/i);
+    const [row] = within(list).getAllByRole("listitem");
+    await user.click(within(row).getByRole("button", { name: /^Foo review/ }));
     // Confirm we landed on the Dropbox view (account header is visible)
     expect(await screen.findByText(/Dropbox · X/i)).toBeInTheDocument();
     // ...and that the path bar shows the recent's path, not root.
     expect(screen.getByLabelText(/current dropbox path/i)).toHaveTextContent(
       "/ARTISTS/foo",
     );
+  });
+
+  it("clicking a recent's pin toggle persists pinned status without navigating", async () => {
+    addRecentPipeline({ path: "/A", name: "Alpha" });
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    const list = screen.getByLabelText(/recent pipelines/i);
+    await user.click(within(list).getByRole("button", { name: /pin alpha/i }));
+
+    // Still on dashboard; row toggled to pinned and exposes Unpin label.
+    expect(
+      within(list).getByRole("button", { name: /unpin alpha/i }),
+    ).toBeInTheDocument();
+    // Underlying storage now flags the entry as pinned.
+    const stored = JSON.parse(
+      localStorage.getItem("dropbox-interface:recent-pipelines")!,
+    );
+    expect(stored[0]).toMatchObject({ path: "/A", pinned: true });
   });
 
   it("re-reads the recents list when returning to the dashboard", async () => {

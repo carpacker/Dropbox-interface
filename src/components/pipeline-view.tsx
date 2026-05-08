@@ -9,7 +9,14 @@
  * block the initial render on N parallel API calls.
  */
 
-import { AlertTriangle, FolderPlus, Undo2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  FolderPlus,
+  Pin,
+  PinOff,
+  Undo2,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -22,6 +29,13 @@ import {
 import { nextState } from "@/lib/pipeline/pipeline";
 import type { PipelineConfig, PipelineState } from "@/lib/pipeline/schema";
 import {
+  getAllNotes,
+  getNote,
+  setNote,
+  type NotesByPath,
+} from "@/lib/pipeline-notes";
+import { getRecentPipelines, setPinned } from "@/lib/pipeline-recents";
+import {
   dropboxCreateFolder,
   dropboxListFolder,
   dropboxMove,
@@ -33,6 +47,9 @@ const INBOX_ID = "__inbox__";
 
 /** Internal MIME type for the drag-and-drop payload between buckets. */
 const DRAG_MIME = "application/x-dropbox-pipeline-entry";
+
+/** Shared frozen Set so default selection state has a stable identity. */
+const EMPTY_SET: ReadonlySet<string> = Object.freeze(new Set<string>());
 
 type StateListing =
   | { kind: "loading" }
@@ -78,6 +95,23 @@ type PipelineViewProps = {
         inFlight: boolean;
         onClick: () => void;
       };
+      /**
+       * Bulk-select state for the row. Present in pipeline view only;
+       * absent in the flat browser. Caller decides whether to render a
+       * checkbox.
+       */
+      select?: {
+        selected: boolean;
+        onToggle: () => void;
+      };
+      /**
+       * Local-only review note attached to this row. `hasNote` drives
+       * the indicator dot; `onClick` opens the editor modal.
+       */
+      note?: {
+        hasNote: boolean;
+        onClick: () => void;
+      };
     },
   ) => ReactNode;
 };
@@ -91,10 +125,19 @@ type BucketRef =
   | { kind: "inbox" }
   | { kind: "state"; id: string };
 
-type UndoableMove = {
+type SingleMove = {
   fromPath: string;
   toPath: string;
   entryName: string;
+};
+
+type UndoableMove = {
+  /**
+   * Array of moves the user can undo as a unit. Always at least one
+   * entry; the bulk Promote action populates it with multiple, the
+   * single-row Promote button populates it with one.
+   */
+  moves: SingleMove[];
   destBucketName: string;
   /** Source + destination buckets so undo can re-invalidate the right ones. */
   sourceBucket: BucketRef;
@@ -151,11 +194,27 @@ export function PipelineView(props: PipelineViewProps) {
     fetchedRef.current = new Set();
   }, [parentPath]);
 
-  // Promote / Undo / Create-folder state.
-  const [movingEntryPath, setMovingEntryPath] = useState<string | null>(null);
+  // Promote / Undo / Create-folder state. `movingPaths` is a Set so the
+  // bulk Promote can mark multiple rows in flight simultaneously.
+  const [movingPaths, setMovingPaths] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [undoableMove, setUndoableMove] = useState<UndoableMove | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [creatingState, setCreatingState] = useState<string | null>(null);
+
+  /**
+   * Selection state for bulk Promote. Keyed by bucket id so a user can
+   * select items in Processing, switch to Ready to verify something,
+   * then come back without losing their selection. Cleared on parent
+   * change (different folder = different state-folder paths).
+   */
+  const [selectedByBucket, setSelectedByBucket] = useState<
+    Record<string, ReadonlySet<string>>
+  >({});
+  useEffect(() => {
+    setSelectedByBucket({});
+  }, [parentPath]);
 
   // Drag-and-drop state. Path of the row currently being dragged (so we
   // can dim it) and the bucket id currently under the pointer (so we can
@@ -164,6 +223,48 @@ export function PipelineView(props: PipelineViewProps) {
   const [dragHoverBucketId, setDragHoverBucketId] = useState<string | null>(
     null,
   );
+
+  // Pin state for the current pipeline parent. Reads from
+  // pipeline-recents on mount + after toggle so the header reflects
+  // localStorage truth without requiring a route refresh.
+  const [isPinned, setIsPinned] = useState<boolean>(() =>
+    Boolean(getRecentPipelines().find((r) => r.path === parentPath)?.pinned),
+  );
+  useEffect(() => {
+    setIsPinned(
+      Boolean(getRecentPipelines().find((r) => r.path === parentPath)?.pinned),
+    );
+  }, [parentPath]);
+
+  function togglePin() {
+    const next = !isPinned;
+    setPinned(parentPath, next);
+    setIsPinned(next);
+  }
+
+  /**
+   * Notes are local-only and keyed by Dropbox path. We snapshot the
+   * full table on mount + after every save so the indicator dots can
+   * render in O(1) per row.
+   */
+  const [notesByPath, setNotesByPath] = useState<NotesByPath>(() =>
+    getAllNotes(),
+  );
+  const [editingNoteEntry, setEditingNoteEntry] = useState<DropboxEntry | null>(
+    null,
+  );
+
+  function openNoteEditor(entry: DropboxEntry) {
+    setEditingNoteEntry(entry);
+  }
+  function closeNoteEditor() {
+    setEditingNoteEntry(null);
+  }
+  function saveNote(entry: DropboxEntry, body: string) {
+    setNote(entry.path, body);
+    setNotesByPath(getAllNotes());
+    setEditingNoteEntry(null);
+  }
 
   // Auto-dismiss the undo toast after 8s. Cleared early when the user
   // clicks Dismiss or the parent path changes.
@@ -241,16 +342,14 @@ export function PipelineView(props: PipelineViewProps) {
     destFolderPath: string,
   ) {
     setActionError(null);
-    setMovingEntryPath(entry.path);
+    setMovingPaths(new Set([entry.path]));
     const toPath = joinPath(destFolderPath, entry.name);
     try {
       await dropboxMove(entry.path, toPath);
       refreshBucket(sourceBucket, parentFolderOfPath(entry.path));
       refreshBucket(destBucket, destFolderPath);
       setUndoableMove({
-        fromPath: entry.path,
-        toPath,
-        entryName: entry.name,
+        moves: [{ fromPath: entry.path, toPath, entryName: entry.name }],
         destBucketName: bucketName(destBucket),
         sourceBucket,
         destBucket,
@@ -258,8 +357,86 @@ export function PipelineView(props: PipelineViewProps) {
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
     } finally {
-      setMovingEntryPath(null);
+      setMovingPaths(new Set());
     }
+  }
+
+  /**
+   * Run multiple moves in parallel. Partial-success aware: refreshes
+   * buckets either way, queues a single batch undo for the moves that
+   * succeeded, and surfaces a count for the ones that failed.
+   */
+  async function performBulkMove(
+    entries: Array<{ path: string; name: string }>,
+    sourceBucket: BucketRef,
+    destBucket: BucketRef,
+    destFolderPath: string,
+  ) {
+    if (entries.length === 0) return;
+    setActionError(null);
+    setMovingPaths(new Set(entries.map((e) => e.path)));
+    const sourceFolderPath = parentFolderOfPath(entries[0].path);
+
+    const results = await Promise.allSettled(
+      entries.map(async (e) => {
+        const toPath = joinPath(destFolderPath, e.name);
+        await dropboxMove(e.path, toPath);
+        return {
+          fromPath: e.path,
+          toPath,
+          entryName: e.name,
+        } satisfies SingleMove;
+      }),
+    );
+
+    const succeeded: SingleMove[] = [];
+    const failed: string[] = [];
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        succeeded.push(r.value);
+      } else {
+        failed.push(r.reason instanceof Error ? r.reason.message : String(r.reason));
+      }
+    }
+
+    refreshBucket(sourceBucket, sourceFolderPath);
+    refreshBucket(destBucket, destFolderPath);
+
+    if (succeeded.length > 0) {
+      setUndoableMove({
+        moves: succeeded,
+        destBucketName: bucketName(destBucket),
+        sourceBucket,
+        destBucket,
+      });
+      // Drop the successful entries from the bucket's selection.
+      setSelectedByBucket((prev) => {
+        if (sourceBucket.kind === "state") {
+          const sel = prev[sourceBucket.id];
+          if (!sel) return prev;
+          const next = new Set(sel);
+          for (const m of succeeded) next.delete(m.fromPath);
+          return { ...prev, [sourceBucket.id]: next };
+        }
+        if (sourceBucket.kind === "inbox") {
+          const sel = prev[INBOX_ID];
+          if (!sel) return prev;
+          const next = new Set(sel);
+          for (const m of succeeded) next.delete(m.fromPath);
+          return { ...prev, [INBOX_ID]: next };
+        }
+        return prev;
+      });
+    }
+
+    if (failed.length > 0) {
+      setActionError(
+        `${failed.length} of ${entries.length} moves failed. ` +
+          `First error: ${failed[0]}`,
+      );
+    }
+
+    setMovingPaths(new Set());
   }
 
   async function handleUndo() {
@@ -267,15 +444,24 @@ export function PipelineView(props: PipelineViewProps) {
     const move = undoableMove;
     setUndoableMove(null);
     setActionError(null);
-    setMovingEntryPath(move.toPath);
+    setMovingPaths(new Set(move.moves.map((m) => m.toPath)));
     try {
-      await dropboxMove(move.toPath, move.fromPath);
-      refreshBucket(move.sourceBucket, parentFolderOfPath(move.fromPath));
-      refreshBucket(move.destBucket, parentFolderOfPath(move.toPath));
+      const results = await Promise.allSettled(
+        move.moves.map((m) => dropboxMove(m.toPath, m.fromPath)),
+      );
+      const failed = results.filter((r) => r.status === "rejected");
+      // Refresh once at the end whether all succeeded or some didn't.
+      refreshBucket(move.sourceBucket, parentFolderOfPath(move.moves[0].fromPath));
+      refreshBucket(move.destBucket, parentFolderOfPath(move.moves[0].toPath));
+      if (failed.length > 0) {
+        setActionError(
+          `Could not undo ${failed.length} of ${move.moves.length} moves.`,
+        );
+      }
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
     } finally {
-      setMovingEntryPath(null);
+      setMovingPaths(new Set());
     }
   }
 
@@ -442,6 +628,30 @@ export function PipelineView(props: PipelineViewProps) {
     };
   }, [selectedBucket, config, classification]);
 
+  // Per-bucket selection set for the *currently-selected* bucket.
+  const selectedPaths: ReadonlySet<string> =
+    selectedByBucket[selectedId] ?? EMPTY_SET;
+
+  function toggleSelect(entryPath: string) {
+    setSelectedByBucket((prev) => {
+      const current = prev[selectedId] ?? EMPTY_SET;
+      const next = new Set(current);
+      if (next.has(entryPath)) {
+        next.delete(entryPath);
+      } else {
+        next.add(entryPath);
+      }
+      return { ...prev, [selectedId]: next };
+    });
+  }
+
+  function clearSelection() {
+    setSelectedByBucket((prev) => ({
+      ...prev,
+      [selectedId]: EMPTY_SET,
+    }));
+  }
+
   const contents = renderBucketContents({
     bucket: selectedBucket,
     classification,
@@ -453,7 +663,7 @@ export function PipelineView(props: PipelineViewProps) {
     onNavigateInto,
     renderEntryRow,
     promoteContext,
-    movingEntryPath,
+    movingPaths,
     onPromote: (entry) => {
       if (!promoteContext) return;
       void performMove(
@@ -469,17 +679,39 @@ export function PipelineView(props: PipelineViewProps) {
     draggingPath,
     onDragStart: (entry) => setDraggingPath(entry.path),
     onDragEnd: () => setDraggingPath(null),
+    selectedPaths,
+    onToggleSelect: toggleSelect,
+    notesByPath,
+    onOpenNote: openNoteEditor,
   });
 
   const missing = classification.missing;
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <p className="text-sm font-medium">{config.name ?? "Pipeline"}</p>
-        {config.description ? (
-          <p className="text-xs text-muted-foreground">{config.description}</p>
-        ) : null}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-1">
+          <p className="text-sm font-medium">{config.name ?? "Pipeline"}</p>
+          {config.description ? (
+            <p className="text-xs text-muted-foreground">{config.description}</p>
+          ) : null}
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={togglePin}
+          aria-label={isPinned ? "Unpin pipeline" : "Pin pipeline"}
+          aria-pressed={isPinned ? "true" : "false"}
+          title={
+            isPinned
+              ? "Pinned — appears at the top of Recent pipelines"
+              : "Pin this pipeline to the top of Recent pipelines"
+          }
+        >
+          {isPinned ? <Pin /> : <PinOff />}
+          <span className="hidden sm:inline">{isPinned ? "Pinned" : "Pin"}</span>
+        </Button>
       </div>
 
       {missing.length > 0 ? (
@@ -537,8 +769,17 @@ export function PipelineView(props: PipelineViewProps) {
           className="flex items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2 text-sm"
         >
           <span className="truncate">
-            Moved <strong>{undoableMove.entryName}</strong> to{" "}
-            <strong>{undoableMove.destBucketName}</strong>.
+            {undoableMove.moves.length === 1 ? (
+              <>
+                Moved <strong>{undoableMove.moves[0].entryName}</strong> to{" "}
+                <strong>{undoableMove.destBucketName}</strong>.
+              </>
+            ) : (
+              <>
+                Moved <strong>{undoableMove.moves.length} items</strong> to{" "}
+                <strong>{undoableMove.destBucketName}</strong>.
+              </>
+            )}
           </span>
           <span className="flex shrink-0 gap-1">
             <Button
@@ -589,14 +830,173 @@ export function PipelineView(props: PipelineViewProps) {
 
       <Separator />
 
+      {selectedPaths.size > 0 ? (
+        <div
+          role="toolbar"
+          aria-label="Bulk actions"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-sm"
+        >
+          <span>
+            <strong>{selectedPaths.size}</strong> selected
+          </span>
+          <span className="flex shrink-0 gap-2">
+            {promoteContext ? (
+              <Button
+                type="button"
+                size="sm"
+                disabled={movingPaths.size > 0}
+                onClick={() => {
+                  if (!promoteContext) return;
+                  // Resolve selected paths to entries from the current bucket's
+                  // listing so we have name (needed to compute toPath).
+                  const entriesNow = currentBucketEntries(
+                    selectedBucket,
+                    classification,
+                    parentEntries,
+                    stateListings,
+                  );
+                  const picked = entriesNow.filter((e) =>
+                    selectedPaths.has(e.path),
+                  );
+                  void performBulkMove(
+                    picked.map((e) => ({ path: e.path, name: e.name })),
+                    promoteContext.sourceBucket,
+                    promoteContext.destBucket,
+                    promoteContext.destFolderPath,
+                  );
+                }}
+              >
+                Promote {selectedPaths.size} to {promoteContext.destStateName}
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={clearSelection}
+              aria-label="Clear selection"
+            >
+              Clear
+            </Button>
+          </span>
+        </div>
+      ) : null}
+
       <div
         role="tabpanel"
         aria-label={selectedBucket?.name ?? "Pipeline contents"}
       >
         {contents}
       </div>
+
+      {editingNoteEntry ? (
+        <NoteEditorModal
+          entry={editingNoteEntry}
+          initialBody={getNote(editingNoteEntry.path)?.body ?? ""}
+          onSave={(body) => saveNote(editingNoteEntry, body)}
+          onClose={closeNoteEditor}
+        />
+      ) : null}
     </div>
   );
+}
+
+function NoteEditorModal({
+  entry,
+  initialBody,
+  onSave,
+  onClose,
+}: {
+  entry: DropboxEntry;
+  initialBody: string;
+  onSave: (body: string) => void;
+  onClose: () => void;
+}) {
+  const [body, setBody] = useState(initialBody);
+
+  // Esc closes the modal without saving.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Note: ${entry.name}`}
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur"
+    >
+      <div
+        className="flex w-full max-w-lg flex-col gap-3 rounded-lg border bg-card p-4 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <p className="text-sm font-medium">Note</p>
+            <p className="truncate font-mono text-xs text-muted-foreground">
+              {entry.name}
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            aria-label="Close note editor"
+          >
+            <X data-icon="inline-start" />
+          </Button>
+        </div>
+        <textarea
+          autoFocus
+          value={body}
+          onChange={(e) => setBody(e.currentTarget.value)}
+          rows={6}
+          aria-label="Note body"
+          className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          placeholder="Notes are local to this machine — not synced via Dropbox."
+        />
+        <p className="text-xs text-muted-foreground">
+          Stored in <code>localStorage</code>. Saving an empty note clears it.
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="button" size="sm" onClick={() => onSave(body)}>
+            Save
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Resolve a bucket to the DropboxEntry list that backs it. Inbox →
+ * the inbox classification slice; state → the cached state listing.
+ * Returns [] when the bucket isn't loaded or doesn't apply.
+ */
+function currentBucketEntries(
+  bucket: Bucket | undefined,
+  classification: ReturnType<typeof classifyParentListing>,
+  parentEntries: DropboxEntry[],
+  stateListings: Record<string, StateListing>,
+): DropboxEntry[] {
+  if (!bucket) return [];
+  if (bucket.kind === "inbox") {
+    const map = new Map(parentEntries.map((e) => [e.path, e]));
+    return classification.inbox
+      .map((h) => map.get(h.path))
+      .filter((e): e is DropboxEntry => e !== undefined);
+  }
+  const listing = stateListings[bucket.id];
+  return listing && listing.kind === "ready" ? listing.entries : [];
 }
 
 function BucketChip({
@@ -691,7 +1091,7 @@ type RenderArgs = {
   onNavigateInto: (path: string) => void;
   renderEntryRow: PipelineViewProps["renderEntryRow"];
   promoteContext: PromoteContext | null;
-  movingEntryPath: string | null;
+  movingPaths: ReadonlySet<string>;
   onPromote: (entry: DropboxEntry) => void;
   /** BucketRef of the currently-rendered bucket; baked into drag payloads. */
   sourceBucketRef: BucketRef;
@@ -699,6 +1099,12 @@ type RenderArgs = {
   draggingPath: string | null;
   onDragStart: (entry: DropboxEntry) => void;
   onDragEnd: () => void;
+  /** Selection state for the currently-rendered bucket. */
+  selectedPaths: ReadonlySet<string>;
+  onToggleSelect: (entryPath: string) => void;
+  /** Notes table snapshot, used to drive the per-row indicator dot. */
+  notesByPath: NotesByPath;
+  onOpenNote: (entry: DropboxEntry) => void;
 };
 
 function renderBucketContents(args: RenderArgs): ReactNode {
@@ -759,19 +1165,22 @@ function renderEntryList(
           const promote = args.promoteContext
             ? {
                 targetStateName: args.promoteContext.destStateName,
-                inFlight: args.movingEntryPath === entry.path,
+                inFlight: args.movingPaths.has(entry.path),
                 onClick: () => args.onPromote(entry),
               }
             : undefined;
           const isDragging = args.draggingPath === entry.path;
+          const isSelected = args.selectedPaths.has(entry.path);
           return (
             <li
               key={entry.path}
               draggable
               data-dragging={isDragging ? "true" : undefined}
+              data-selected={isSelected ? "true" : undefined}
               className={cn(
                 "rounded-md transition",
                 isDragging && "opacity-40",
+                isSelected && "bg-muted/40",
               )}
               onDragStart={(e) => {
                 e.dataTransfer.setData(
@@ -793,6 +1202,14 @@ function renderEntryList(
                 onSave: () => args.onSaveFile(entry),
                 onOpenFolder: () => args.onNavigateInto(entry.path),
                 promote,
+                select: {
+                  selected: isSelected,
+                  onToggle: () => args.onToggleSelect(entry.path),
+                },
+                note: {
+                  hasNote: Boolean(args.notesByPath[entry.path]),
+                  onClick: () => args.onOpenNote(entry),
+                },
               })}
             </li>
           );

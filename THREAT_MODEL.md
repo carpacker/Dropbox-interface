@@ -111,6 +111,17 @@ disconnect + reconnect to grant the new scope; a missing-scope error
 from Dropbox surfaces inline as a normal API error and points the user
 to reconnect.
 
+### D8d. Per-item notes stay local-only.
+The "review notes" feature stores comments in `localStorage`,
+keyed by Dropbox path. Sharing them across a team would require
+writing a sidecar JSON file in Dropbox, which would require the
+`files.content.write` scope — exactly the surface §D8b refuses to
+add. Until that policy flips (and there's an explicit reason),
+notes are useful as private memory for the current operator and
+nothing more. The helper (`src/lib/pipeline-notes.ts`) is shaped
+so the storage backend can be swapped without touching the UI if
+we ever do enable upload.
+
 ### D8c. Promotes are reversible by design.
 Every successful Promote sets a transient `undoableMove` record in the
 view that auto-clears after 8s but offers an explicit Undo button (a
