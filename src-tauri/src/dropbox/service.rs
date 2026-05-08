@@ -154,6 +154,66 @@ impl DropboxService {
         Ok(entries_from_raw(parsed.entries))
     }
 
+    /// Read a small text file from Dropbox into memory, capped to
+    /// `max_bytes`. Streams the response and bails as soon as the cap is
+    /// crossed so a malicious or accidental large file can't blow out
+    /// memory.
+    ///
+    /// Returns `Ok(None)` when the file is reported as `path/not_found` by
+    /// the API; any other API failure (malformed path, permissions, etc.)
+    /// returns `Err(ServiceError::Api)`.
+    pub async fn read_text_capped(
+        &self,
+        path: &str,
+        max_bytes: u64,
+    ) -> Result<Option<String>, ServiceError> {
+        let access = self.fresh_access_token().await?;
+        let url = format!("{}/files/download", self.endpoints.content_base);
+        let arg = json!({ "path": path });
+        let mut resp = self
+            .http
+            .post(url)
+            .bearer_auth(&access)
+            .header("Dropbox-API-Arg", serde_json::to_string(&arg).unwrap())
+            .send()
+            .await
+            .map_err(|e| ServiceError::Network(e.to_string()))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<read body: {e}>"));
+            // Dropbox surfaces missing-path errors as 409 with a JSON body
+            // containing `path/not_found`. Treat that as "no config" so
+            // PipelineSource can fall back gracefully.
+            if status == reqwest::StatusCode::CONFLICT && body.contains("not_found")
+            {
+                return Ok(None);
+            }
+            return Err(ServiceError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let mut buf: Vec<u8> = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| ServiceError::Network(e.to_string()))?
+        {
+            if (buf.len() as u64) + (chunk.len() as u64) > max_bytes {
+                return Err(ServiceError::Decode(format!(
+                    "file at {path} exceeds {max_bytes}-byte cap"
+                )));
+            }
+            buf.extend_from_slice(&chunk);
+        }
+        String::from_utf8(buf)
+            .map(Some)
+            .map_err(|e| ServiceError::Decode(e.to_string()))
+    }
+
     /// Stream a file from `/2/files/download` directly into the given local
     /// file path. Returns the number of bytes written.
     pub async fn download_to_path(
@@ -825,6 +885,104 @@ mod tests {
             }
             e => panic!("wrong error: {e:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn read_text_capped_returns_some_on_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/download"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("hello world"),
+            )
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        let body = svc.read_text_capped("/x.txt", 1024).await.unwrap();
+        assert_eq!(body.as_deref(), Some("hello world"));
+    }
+
+    #[tokio::test]
+    async fn read_text_capped_returns_none_on_path_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/download"))
+            .respond_with(ResponseTemplate::new(409).set_body_string(
+                r#"{"error_summary":"path/not_found/.","error":{".tag":"path","path":{".tag":"not_found"}}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        assert!(svc.read_text_capped("/missing", 1024).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn read_text_capped_propagates_other_api_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/download"))
+            .respond_with(ResponseTemplate::new(409).set_body_string("path/malformed_path"))
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        match svc.read_text_capped("/oops", 1024).await.unwrap_err() {
+            ServiceError::Api { status, body } => {
+                assert_eq!(status, 409);
+                assert!(body.contains("malformed_path"));
+            }
+            e => panic!("wrong error: {e:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_text_capped_rejects_oversized_payload() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/download"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("12345678901234567890"),
+            )
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        match svc.read_text_capped("/big", 8).await.unwrap_err() {
+            ServiceError::Decode(msg) => assert!(msg.contains("cap"), "{msg}"),
+            e => panic!("wrong error: {e:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_text_capped_rejects_non_utf8() {
+        let server = MockServer::start().await;
+        // 0xFF is invalid UTF-8 start byte
+        Mock::given(method("POST"))
+            .and(path("/2/files/download"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xFF, 0xFE]))
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        match svc.read_text_capped("/binary", 1024).await.unwrap_err() {
+            ServiceError::Decode(_) => {}
+            e => panic!("wrong error: {e:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_text_capped_returns_not_connected_without_tokens() {
+        let server = MockServer::start().await;
+        let svc = build_service(
+            &server,
+            Arc::new(InMemoryStore::new()),
+            Arc::new(FixedClock::new(1_000)),
+        )
+        .await;
+        let err = svc.read_text_capped("/x", 1024).await.unwrap_err();
+        assert!(matches!(err, ServiceError::NotConnected));
     }
 
     #[tokio::test]

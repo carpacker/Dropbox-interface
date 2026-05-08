@@ -96,6 +96,19 @@ export function dropboxSaveFileTo(path: string, dest: string) {
   });
 }
 
+/**
+ * Read a small text file (e.g. a pipeline config) from Dropbox. Returns
+ * the file contents, or `null` when the path does not exist. Capped at
+ * 256KB by default; pass `maxBytes` to override.
+ */
+export function dropboxReadTextFile(path: string, maxBytes?: number) {
+  return invoke<string | null>("dropbox_read_text_file", {
+    appKey: dropboxAppKey(),
+    path,
+    maxBytes,
+  });
+}
+
 /** Wrap a temp/preview path so it can be used as an `<img src>`. */
 export function dropboxLocalSrc(localPath: string): string {
   return convertFileSrc(localPath);

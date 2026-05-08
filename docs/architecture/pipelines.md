@@ -8,10 +8,14 @@ from its current state folder to the next one in pipeline order.
 
 ## Status
 
-**v1 architecture landed.** Model layer, validator, pure helpers, and the
-read seam (`PipelineSource`) are in place with exhaustive tests. No UI, no
-Rust commands, no write ops yet — those land in follow-up rounds against
-this contract.
+**Read-only v1 in place.** Model layer + Dropbox source + read-only UI
+have all landed. When you navigate into a Dropbox folder that contains a
+valid `.dropbox-interface.json`, `DropboxApp` switches automatically to
+`PipelineView`; otherwise it falls back to the flat browser. Invalid
+configs surface a non-blocking warning banner and do not break browsing.
+
+Write operations (move, delete, rename) and the **Promote** action are
+the next round.
 
 ## Why this exists
 
@@ -155,27 +159,35 @@ problem at once.
   If we ever need a back-edge ("send back to processing"), it's a
   separate feature on top, not a schema change.
 
-## Roadmap sketch
+## Roadmap
 
-The model layer (this round) is the contract. Each future round plugs in
-without touching the pipeline lib:
+Done:
 
-1. **Dropbox source.** `DropboxPipelineSource` implements `PipelineSource`
-   against the existing `dropbox_list_folder` + a new
-   `dropbox_read_text_file` (or `dropbox_read_pipeline_config`) command.
-   Validates the bytes through `parseConfig`.
-2. **Pipeline UI.** A `PipelineView` component that takes
-   `(config, classification, perStateListings)` and renders the bucket
-   strip + per-state lists, reusing the existing entry rows (thumbnails,
-   preview-on-click, Save).
-3. **Promote action.** `dropbox_move_v2` Tauri command, wired to a
-   "Promote" button on each entry that uses `nextState` to figure out the
-   destination. Refresh the affected listings on success.
-4. **Discovery.** When `DropboxApp` opens a folder, it asks the source
-   for `.dropbox-interface.json`; if present and valid, it switches to
-   `PipelineView`; otherwise the existing flat browser.
-5. **Local backend** (optional, later). Same interface, mirroring the
-   local file browser.
+1. ✅ **Pipeline lib.** `parseConfig`, helpers, `PipelineSource` interface.
+2. ✅ **Dropbox source.** `dropbox_read_text_file` Rust command + frontend
+   `DropboxPipelineSource` implementing the interface against
+   `dropbox_list_folder` + the new text-read command. Reads are
+   size-capped (256KB default) and `path/not_found` becomes `null`.
+3. ✅ **Pipeline UI.** `PipelineView` (Dropbox-specific for v1)
+   classifies the parent listing, renders a tab-strip of present states
+   plus an Inbox bucket, lazy-loads each state folder's contents on
+   selection, surfaces missing-folder warnings, and delegates row
+   rendering back to `DropboxApp` so thumbnails / preview / Save still
+   work.
+4. ✅ **Discovery.** `DropboxApp` parallel-fetches the listing and the
+   config on every navigation. Valid config → `PipelineView`, invalid
+   config → flat browser + issue banner, missing config → flat browser.
+
+Next:
+
+5. **Promote action.** `dropbox_move_v2` Tauri command, "Promote" button
+   on each entry inside a state bucket; uses `nextState` to compute the
+   target folder. Refresh both the source and destination listings on
+   success.
+6. **Other write ops.** `dropbox_delete_v2`, `dropbox_create_folder_v2`
+   (for adding a new state folder when a `missing` warning fires).
+7. **Local backend** (optional, later). Mirror `DropboxPipelineSource`
+   for the local FS so the existing `FileBrowser` can host pipelines too.
 
 ## Updating this doc
 

@@ -99,6 +99,7 @@ pub fn run() {
             dropbox::commands::dropbox_get_thumbnail,
             dropbox::commands::dropbox_download_to_temp,
             dropbox::commands::dropbox_save_file_to,
+            dropbox::commands::dropbox_read_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -23,6 +23,9 @@ import {
 } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { PipelineView } from "@/components/pipeline-view";
+import { DropboxPipelineSource } from "@/lib/dropbox-pipeline-source";
+import { parseConfig, type ConfigIssue, type PipelineConfig } from "@/lib/pipeline/schema";
 import {
   dropboxConnect,
   dropboxDisconnect,
@@ -208,20 +211,49 @@ function RemoteBrowser({ account, onDisconnect }: RemoteBrowserProps) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [savingPath, setSavingPath] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [pipelineConfig, setPipelineConfig] = useState<PipelineConfig | null>(
+    null,
+  );
+  const [pipelineIssues, setPipelineIssues] = useState<ConfigIssue[] | null>(
+    null,
+  );
 
-  const load = useCallback(async (next: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const rows = await dropboxListFolder(next);
-      setEntries(rows);
-      setPath(next);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  // Stable instance — pure, no internal state worth caching across renders.
+  const [pipelineSource] = useState(() => new DropboxPipelineSource());
+
+  const load = useCallback(
+    async (next: string) => {
+      setLoading(true);
+      setError(null);
+      // Reset pipeline detection on each navigation; we'll re-evaluate
+      // against the new path's listing.
+      setPipelineConfig(null);
+      setPipelineIssues(null);
+      try {
+        const [rows, rawConfig] = await Promise.all([
+          dropboxListFolder(next),
+          // A failed config read shouldn't block the browse; swallow it
+          // and the user just sees the flat view.
+          pipelineSource.loadConfig(next).catch(() => null),
+        ]);
+        setEntries(rows);
+        setPath(next);
+        if (rawConfig != null) {
+          const parsed = parseConfig(rawConfig);
+          if (parsed.ok) {
+            setPipelineConfig(parsed.config);
+          } else {
+            setPipelineIssues(parsed.issues);
+          }
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [pipelineSource],
+  );
 
   useEffect(() => {
     void load("");
@@ -338,31 +370,73 @@ function RemoteBrowser({ account, onDisconnect }: RemoteBrowserProps) {
           </p>
         ) : null}
 
+        {pipelineIssues ? (
+          <div
+            role="status"
+            className="flex flex-col gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-300"
+          >
+            <p className="font-medium">
+              .dropbox-interface.json is invalid; falling back to flat view.
+            </p>
+            <ul className="list-disc pl-5 text-xs">
+              {pipelineIssues.slice(0, 5).map((issue, i) => (
+                <li key={`${issue.path}-${i}`}>
+                  <code>{issue.path || "(root)"}</code>: {issue.message}
+                </li>
+              ))}
+              {pipelineIssues.length > 5 ? (
+                <li>…and {pipelineIssues.length - 5} more.</li>
+              ) : null}
+            </ul>
+          </div>
+        ) : null}
+
         <Separator />
 
-        <ScrollArea className="h-[min(55vh,520px)] rounded-lg border">
-          <ul className="flex flex-col gap-1 p-2">
-            {loading ? (
-              <li className="px-2 py-6 text-sm text-muted-foreground">Loading…</li>
-            ) : entries.length === 0 ? (
-              <li className="px-2 py-6 text-sm text-muted-foreground">
-                This folder is empty.
-              </li>
-            ) : (
-              entries.map((entry) => (
-                <li key={entry.path}>
-                  <EntryRow
-                    entry={entry}
-                    saving={savingPath === entry.path}
-                    onOpenFolder={(p) => void load(p)}
-                    onPreview={() => void openPreview(entry)}
-                    onSave={() => void handleSave(entry)}
-                  />
-                </li>
-              ))
+        {pipelineConfig ? (
+          <PipelineView
+            parentPath={path}
+            config={pipelineConfig}
+            parentEntries={entries}
+            onNavigateInto={(p) => void load(p)}
+            onPreviewImage={(e) => void openPreview(e)}
+            onSaveFile={(e) => void handleSave(e)}
+            savingPath={savingPath}
+            renderEntryRow={(entry, opts) => (
+              <EntryRow
+                entry={entry}
+                saving={opts.saving}
+                onOpenFolder={opts.onOpenFolder}
+                onPreview={opts.onPreview}
+                onSave={opts.onSave}
+              />
             )}
-          </ul>
-        </ScrollArea>
+          />
+        ) : (
+          <ScrollArea className="h-[min(55vh,520px)] rounded-lg border">
+            <ul className="flex flex-col gap-1 p-2">
+              {loading ? (
+                <li className="px-2 py-6 text-sm text-muted-foreground">Loading…</li>
+              ) : entries.length === 0 ? (
+                <li className="px-2 py-6 text-sm text-muted-foreground">
+                  This folder is empty.
+                </li>
+              ) : (
+                entries.map((entry) => (
+                  <li key={entry.path}>
+                    <EntryRow
+                      entry={entry}
+                      saving={savingPath === entry.path}
+                      onOpenFolder={(p) => void load(p)}
+                      onPreview={() => void openPreview(entry)}
+                      onSave={() => void handleSave(entry)}
+                    />
+                  </li>
+                ))
+              )}
+            </ul>
+          </ScrollArea>
+        )}
       </CardContent>
 
       {preview ? (

@@ -473,6 +473,119 @@ describe("DropboxApp — image preview + save", () => {
   });
 });
 
+describe("DropboxApp — pipeline auto-discovery", () => {
+  function setupConnected() {
+    setInvokeHandler("dropbox_status", () => ({
+      accountId: "dbid:1",
+      displayName: "Ada",
+      email: "a@b",
+    }));
+  }
+
+  it("renders the flat list when no .dropbox-interface.json is present", async () => {
+    setupConnected();
+    setInvokeHandler("dropbox_list_folder", () => [
+      {
+        kind: "file",
+        name: "todo.txt",
+        path: "/todo.txt",
+        displayPath: "/todo.txt",
+        size: 1,
+        serverModified: null,
+      },
+    ]);
+    setInvokeHandler("dropbox_read_text_file", () => null);
+
+    render(<DropboxApp />);
+    expect(
+      await screen.findByRole("button", { name: /^todo\.txt$/i }),
+    ).toBeInTheDocument();
+    // No bucket strip in flat mode.
+    expect(
+      screen.queryByRole("tablist", { name: /pipeline buckets/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders the pipeline view when a valid config is found", async () => {
+    setupConnected();
+    setInvokeHandler("dropbox_list_folder", (args) => {
+      const path = (args as { path: string }).path;
+      if (path === "") {
+        return [
+          {
+            kind: "folder",
+            name: "1__Processing",
+            path: "/1__Processing",
+            displayPath: "/1__Processing",
+            size: null,
+            serverModified: null,
+          },
+          {
+            kind: "file",
+            name: ".dropbox-interface.json",
+            path: "/.dropbox-interface.json",
+            displayPath: "/.dropbox-interface.json",
+            size: 99,
+            serverModified: null,
+          },
+        ];
+      }
+      return [];
+    });
+    setInvokeHandler("dropbox_read_text_file", (args) => {
+      expect(args).toMatchObject({ path: "/.dropbox-interface.json" });
+      return JSON.stringify({
+        version: 1,
+        kind: "pipeline",
+        states: [
+          { id: "processing", folder: "1__Processing", name: "Processing" },
+        ],
+      });
+    });
+
+    render(<DropboxApp />);
+    expect(
+      await screen.findByRole("tablist", { name: /pipeline buckets/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: /processing/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("falls back to flat view and shows an issue banner on invalid config", async () => {
+    setupConnected();
+    setInvokeHandler("dropbox_list_folder", () => []);
+    setInvokeHandler("dropbox_read_text_file", () =>
+      // wrong kind → triggers invalid_kind issue
+      JSON.stringify({ version: 1, kind: "library", states: [] }),
+    );
+
+    render(<DropboxApp />);
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /invalid; falling back to flat view/i,
+    );
+    // No bucket strip rendered.
+    expect(
+      screen.queryByRole("tablist", { name: /pipeline buckets/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("ignores config-load failures so the flat browser still works", async () => {
+    setupConnected();
+    setInvokeHandler("dropbox_list_folder", () => []);
+    setInvokeHandler("dropbox_read_text_file", () => {
+      throw new Error("rate limited");
+    });
+
+    render(<DropboxApp />);
+    // No alert (config error is swallowed), folder loads as empty.
+    expect(
+      await screen.findByText(/this folder is empty/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
 describe("DropboxApp — error and recovery", () => {
   it("surfaces a status error and lets the user retry", async () => {
     let calls = 0;

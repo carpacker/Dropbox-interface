@@ -136,6 +136,29 @@ pub async fn dropbox_download_to_temp(
     Ok(dest.to_string_lossy().into_owned())
 }
 
+/// Default cap for `dropbox_read_text_file`. Pipeline configs typically
+/// run a few KB; 256KB gives plenty of headroom while preventing a
+/// malicious or accidental large file from flooding the renderer.
+pub const DEFAULT_TEXT_FILE_MAX_BYTES: u64 = 256 * 1024;
+
+/// Read a small text file (e.g. a pipeline config) from Dropbox.
+///
+/// Returns `Some(contents)` on success, `None` when the file does not
+/// exist (Dropbox `path/not_found`), or an error string for any other
+/// failure. Bounded by `max_bytes` (defaults to 256KB).
+#[tauri::command]
+pub async fn dropbox_read_text_file(
+    state: State<'_, DropboxState>,
+    app_key: String,
+    path: String,
+    max_bytes: Option<u64>,
+) -> Result<Option<String>, String> {
+    let svc = state.service(&app_key).await;
+    svc.read_text_capped(&path, max_bytes.unwrap_or(DEFAULT_TEXT_FILE_MAX_BYTES))
+        .await
+        .map_err(ServiceError::into_string)
+}
+
 /// Stream a Dropbox file directly to a user-chosen destination on disk.
 #[tauri::command]
 pub async fn dropbox_save_file_to(
