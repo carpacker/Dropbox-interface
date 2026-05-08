@@ -1,7 +1,8 @@
-import { ArrowLeft, FolderOpen, MonitorCog } from "lucide-react";
+import { ArrowLeft, Cloud, FolderOpen, MonitorCog } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { DesktopWorkspaceApp } from "@/components/desktop-workspace-app";
+import { DropboxApp } from "@/components/dropbox-app";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { PhotosApp } from "@/components/photos-app";
 import { Button } from "@/components/ui/button";
@@ -13,10 +14,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
+type AppId = "dashboard" | "workspace" | "photos" | "dropbox";
+
 function App() {
-  const [activeApp, setActiveApp] = useState<"dashboard" | "workspace" | "photos">(
-    "dashboard",
-  );
+  const [activeApp, setActiveApp] = useState<AppId>("dashboard");
 
   const title = useMemo(() => {
     switch (activeApp) {
@@ -24,6 +25,8 @@ function App() {
         return "Desktop Workspace";
       case "photos":
         return "Photos";
+      case "dropbox":
+        return "Dropbox";
       default:
         return "Dashboard";
     }
@@ -56,7 +59,7 @@ function App() {
       </div>
 
       {activeApp === "dashboard" ? (
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <Card className="flex flex-col">
             <CardHeader className="flex flex-col gap-2">
               <CardTitle className="flex items-center gap-2">
@@ -90,6 +93,23 @@ function App() {
               </Button>
             </CardContent>
           </Card>
+
+          <Card className="flex flex-col">
+            <CardHeader className="flex flex-col gap-2">
+              <CardTitle className="flex items-center gap-2">
+                <Cloud />
+                Dropbox
+              </CardTitle>
+              <CardDescription>
+                Connect your Dropbox account and browse remote folders. Read-only.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button type="button" onClick={() => setActiveApp("dropbox")}>
+                Open Dropbox
+              </Button>
+            </CardContent>
+          </Card>
         </div>
       ) : null}
 
@@ -101,6 +121,11 @@ function App() {
       {activeApp === "photos" ? (
         <ErrorBoundary label="Photos">
           <PhotosApp />
+        </ErrorBoundary>
+      ) : null}
+      {activeApp === "dropbox" ? (
+        <ErrorBoundary label="Dropbox">
+          <DropboxApp />
         </ErrorBoundary>
       ) : null}
     </div>

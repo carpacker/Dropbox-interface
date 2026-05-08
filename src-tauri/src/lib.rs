@@ -1,3 +1,4 @@
+mod dropbox;
 mod terminal;
 
 use std::path::{Path, PathBuf};
@@ -81,6 +82,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(terminal::TerminalSession::default())
+        .manage(dropbox::DropboxState::new())
         .invoke_handler(tauri::generate_handler![
             default_local_root,
             parent_directory,
@@ -89,6 +91,10 @@ pub fn run() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_kill,
+            dropbox::commands::dropbox_status,
+            dropbox::commands::dropbox_connect,
+            dropbox::commands::dropbox_disconnect,
+            dropbox::commands::dropbox_list_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
