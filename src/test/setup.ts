@@ -4,10 +4,12 @@ import { cleanup } from "@testing-library/react";
 
 import { clearInvokeHandlers } from "./tauri-core-mock";
 import { clearMockListeners } from "./tauri-event-mock";
+import { clearDialogMock } from "./tauri-dialog-mock";
 
 export function resetTauriMock() {
   clearInvokeHandlers();
   clearMockListeners();
+  clearDialogMock();
 }
 
 afterEach(() => {

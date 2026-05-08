@@ -81,6 +81,7 @@ pub fn is_supported_image(path: &Path) -> bool {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(terminal::TerminalSession::default())
         .manage(dropbox::DropboxState::new())
         .invoke_handler(tauri::generate_handler![
@@ -95,6 +96,9 @@ pub fn run() {
             dropbox::commands::dropbox_connect,
             dropbox::commands::dropbox_disconnect,
             dropbox::commands::dropbox_list_folder,
+            dropbox::commands::dropbox_get_thumbnail,
+            dropbox::commands::dropbox_download_to_temp,
+            dropbox::commands::dropbox_save_file_to,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

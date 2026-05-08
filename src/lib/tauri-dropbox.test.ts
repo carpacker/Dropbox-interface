@@ -5,10 +5,15 @@ import {
   dropboxAppKey,
   dropboxConnect,
   dropboxDisconnect,
+  dropboxDownloadToTemp,
+  dropboxGetThumbnail,
   dropboxIsConfigured,
   dropboxListFolder,
+  dropboxLocalSrc,
   dropboxParent,
+  dropboxSaveFileTo,
   dropboxStatus,
+  isDropboxImage,
   type DropboxAccount,
   type DropboxEntry,
 } from "./tauri-dropbox";
@@ -135,5 +140,77 @@ describe("invoke wrappers", () => {
     await expect(dropboxListFolder("")).rejects.toThrow(
       "not connected to Dropbox",
     );
+  });
+
+  it("dropboxGetThumbnail forwards path + size and returns the data URL", async () => {
+    setInvokeHandler("dropbox_get_thumbnail", (args) => {
+      expect(args).toEqual({
+        appKey: "test-key",
+        path: "/Photos/x.jpg",
+        size: "w128h128",
+      });
+      return "data:image/jpeg;base64,AAA=";
+    });
+    await expect(dropboxGetThumbnail("/Photos/x.jpg", "w128h128")).resolves.toBe(
+      "data:image/jpeg;base64,AAA=",
+    );
+  });
+
+  it("dropboxDownloadToTemp forwards path and returns local path", async () => {
+    setInvokeHandler("dropbox_download_to_temp", (args) => {
+      expect(args).toEqual({ appKey: "test-key", path: "/x.jpg" });
+      return "/tmp/dropbox-interface/preview/abc123-x.jpg";
+    });
+    await expect(dropboxDownloadToTemp("/x.jpg")).resolves.toBe(
+      "/tmp/dropbox-interface/preview/abc123-x.jpg",
+    );
+  });
+
+  it("dropboxSaveFileTo forwards path + dest and returns bytes written", async () => {
+    setInvokeHandler("dropbox_save_file_to", (args) => {
+      expect(args).toEqual({
+        appKey: "test-key",
+        path: "/x.txt",
+        dest: "/home/user/x.txt",
+      });
+      return 42;
+    });
+    await expect(
+      dropboxSaveFileTo("/x.txt", "/home/user/x.txt"),
+    ).resolves.toBe(42);
+  });
+
+  it("dropboxLocalSrc wraps a path with convertFileSrc", () => {
+    expect(dropboxLocalSrc("/tmp/x.jpg")).toBe("asset://localhost//tmp/x.jpg");
+  });
+});
+
+describe("isDropboxImage", () => {
+  function entry(name: string, kind: "file" | "folder" = "file"): DropboxEntry {
+    return {
+      kind,
+      name,
+      path: `/p/${name}`,
+      displayPath: `/p/${name}`,
+      size: 1,
+      serverModified: null,
+    };
+  }
+
+  it.each(["a.jpg", "a.JPG", "a.jpeg", "a.png", "a.gif", "a.webp", "a.bmp"])(
+    "recognizes %s",
+    (name) => {
+      expect(isDropboxImage(entry(name))).toBe(true);
+    },
+  );
+
+  it("rejects non-image extensions", () => {
+    expect(isDropboxImage(entry("a.txt"))).toBe(false);
+    expect(isDropboxImage(entry("a.tiff"))).toBe(false);
+    expect(isDropboxImage(entry("a.mp4"))).toBe(false);
+  });
+
+  it("rejects folders even with image-like names", () => {
+    expect(isDropboxImage(entry("photos.jpg", "folder"))).toBe(false);
   });
 });

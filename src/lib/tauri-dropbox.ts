@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 /**
  * Dropbox app key, sourced from build-time env. Register your Dropbox app at
@@ -54,6 +54,69 @@ export function dropboxListFolder(path: string) {
     appKey: dropboxAppKey(),
     path,
   });
+}
+
+/** Documented Dropbox thumbnail size tokens. */
+export type DropboxThumbnailSize =
+  | "w64h64"
+  | "w128h128"
+  | "w256h256"
+  | "w480h320"
+  | "w640h480"
+  | "w960h640"
+  | "w1024h768"
+  | "w2048h1536";
+
+/** Returns a `data:image/jpeg;base64,…` URL ready to drop into `<img src>`. */
+export function dropboxGetThumbnail(path: string, size: DropboxThumbnailSize) {
+  return invoke<string>("dropbox_get_thumbnail", {
+    appKey: dropboxAppKey(),
+    path,
+    size,
+  });
+}
+
+/**
+ * Stream a Dropbox file into a local temp file and return its absolute path.
+ * Caller is expected to feed it into `convertFileSrc` for `<img>`/`<video>`.
+ */
+export function dropboxDownloadToTemp(path: string) {
+  return invoke<string>("dropbox_download_to_temp", {
+    appKey: dropboxAppKey(),
+    path,
+  });
+}
+
+/** Stream a Dropbox file directly to a user-chosen destination path. */
+export function dropboxSaveFileTo(path: string, dest: string) {
+  return invoke<number>("dropbox_save_file_to", {
+    appKey: dropboxAppKey(),
+    path,
+    dest,
+  });
+}
+
+/** Wrap a temp/preview path so it can be used as an `<img src>`. */
+export function dropboxLocalSrc(localPath: string): string {
+  return convertFileSrc(localPath);
+}
+
+/** Common image extensions; matches the Photos app's set. */
+const IMAGE_EXTENSIONS = [
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".gif",
+  ".webp",
+  ".bmp",
+] as const;
+
+export function isDropboxImage(entry: DropboxEntry): boolean {
+  if (entry.kind !== "file") {
+    return false;
+  }
+  const lowered = entry.name.toLowerCase();
+  return IMAGE_EXTENSIONS.some((ext) => lowered.endsWith(ext));
 }
 
 /**

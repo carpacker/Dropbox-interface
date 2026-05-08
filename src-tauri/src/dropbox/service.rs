@@ -48,12 +48,14 @@ impl Clock for SystemClock {
 }
 
 /// Indirection over the OAuth/Files API endpoints so tests can swap in a
-/// `wiremock` server. In production both URLs point at api.dropboxapi.com.
+/// `wiremock` server. `api_base` covers RPC endpoints (api.dropboxapi.com/2),
+/// `content_base` covers content endpoints (content.dropboxapi.com/2).
 #[derive(Clone)]
 pub struct ApiEndpoints {
     pub token_url: String,
     pub revoke_url: String,
     pub api_base: String,
+    pub content_base: String,
 }
 
 impl Default for ApiEndpoints {
@@ -62,6 +64,7 @@ impl Default for ApiEndpoints {
             token_url: TOKEN_URL.to_string(),
             revoke_url: REVOKE_URL.to_string(),
             api_base: "https://api.dropboxapi.com/2".to_string(),
+            content_base: "https://content.dropboxapi.com/2".to_string(),
         }
     }
 }
@@ -113,8 +116,7 @@ impl DropboxService {
     }
 
     pub async fn list_folder(&self, path: &str) -> Result<Vec<DropboxEntry>, ServiceError> {
-        let tokens = self.store.load()?.ok_or(ServiceError::NotConnected)?;
-        let access = self.access_token_refreshing_if_needed(tokens).await?;
+        let access = self.fresh_access_token().await?;
         let url = format!("{}/files/list_folder", self.endpoints.api_base);
         let body = json!({ "path": path, "recursive": false, "include_deleted": false });
         let resp = self
@@ -139,6 +141,117 @@ impl DropboxService {
         let parsed: ListFolderResponse = serde_json::from_str(&text)
             .map_err(|e| ServiceError::Decode(e.to_string()))?;
         Ok(entries_from_raw(parsed.entries))
+    }
+
+    /// Stream a file from `/2/files/download` directly into the given local
+    /// file path. Returns the number of bytes written.
+    pub async fn download_to_path(
+        &self,
+        path: &str,
+        dest: &std::path::Path,
+    ) -> Result<u64, ServiceError> {
+        use tokio::io::AsyncWriteExt;
+        let mut resp = self.content_get(path, "/files/download").await?;
+        let mut file = tokio::fs::File::create(dest)
+            .await
+            .map_err(|e| ServiceError::Network(format!("create {}: {e}", dest.display())))?;
+        let mut total: u64 = 0;
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| ServiceError::Network(e.to_string()))?
+        {
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| ServiceError::Network(format!("write: {e}")))?;
+            total += chunk.len() as u64;
+        }
+        file.flush()
+            .await
+            .map_err(|e| ServiceError::Network(format!("flush: {e}")))?;
+        Ok(total)
+    }
+
+    /// Fetch a thumbnail via `/2/files/get_thumbnail_v2`. Returns the raw
+    /// JPEG bytes. `size_token` is one of Dropbox's documented size strings:
+    /// `w64h64`, `w128h128`, `w256h256`, `w480h320`, `w640h480`, `w960h640`,
+    /// `w1024h768`, `w2048h1536`.
+    pub async fn get_thumbnail(
+        &self,
+        path: &str,
+        size_token: &str,
+    ) -> Result<Vec<u8>, ServiceError> {
+        let access = self.fresh_access_token().await?;
+        let url = format!("{}/files/get_thumbnail_v2", self.endpoints.content_base);
+        let arg = json!({
+            "resource": {".tag": "path", "path": path},
+            "format": "jpeg",
+            "size": size_token,
+            "mode": "fitone_bestfit",
+        });
+        let resp = self
+            .http
+            .post(url)
+            .bearer_auth(&access)
+            .header("Dropbox-API-Arg", serde_json::to_string(&arg).unwrap())
+            .send()
+            .await
+            .map_err(|e| ServiceError::Network(e.to_string()))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<read body: {e}>"));
+            return Err(ServiceError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| ServiceError::Network(e.to_string()))?;
+        Ok(bytes.to_vec())
+    }
+
+    /// Shared helper for content-endpoint GET-style downloads. Dropbox's
+    /// content API takes its parameters in the `Dropbox-API-Arg` header
+    /// (JSON-encoded) rather than the body; the body must be empty.
+    async fn content_get(
+        &self,
+        path: &str,
+        endpoint: &'static str,
+    ) -> Result<reqwest::Response, ServiceError> {
+        let access = self.fresh_access_token().await?;
+        let url = format!("{}{endpoint}", self.endpoints.content_base);
+        let arg = json!({ "path": path });
+        let resp = self
+            .http
+            .post(url)
+            .bearer_auth(&access)
+            .header("Dropbox-API-Arg", serde_json::to_string(&arg).unwrap())
+            .send()
+            .await
+            .map_err(|e| ServiceError::Network(e.to_string()))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<read body: {e}>"));
+            return Err(ServiceError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        Ok(resp)
+    }
+
+    /// Convenience: load tokens, refresh if stale, return the access token.
+    async fn fresh_access_token(&self) -> Result<String, ServiceError> {
+        let tokens = self.store.load()?.ok_or(ServiceError::NotConnected)?;
+        self.access_token_refreshing_if_needed(tokens).await
     }
 
     pub async fn disconnect(&self) -> Result<(), ServiceError> {
@@ -322,8 +435,18 @@ mod tests {
             token_url: format!("{}/oauth2/token", server.uri()),
             revoke_url: format!("{}/2/auth/token/revoke", server.uri()),
             api_base: format!("{}/2", server.uri()),
+            content_base: format!("{}/2", server.uri()),
         };
         DropboxService::with_test_doubles(store, clock, endpoints, "test-key")
+    }
+
+    fn fresh_store() -> Arc<InMemoryStore> {
+        Arc::new(InMemoryStore::with_tokens(StoredTokens {
+            access_token: "access-1".into(),
+            refresh_token: "refresh-1".into(),
+            expires_at: 9_000,
+            account_id: "dbid:1".into(),
+        }))
     }
 
     #[tokio::test]
@@ -540,6 +663,157 @@ mod tests {
         let svc = build_service(&server, store.clone(), clock).await;
         svc.disconnect().await.unwrap();
         assert!(store.load().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn download_to_path_passes_path_in_dropbox_api_arg_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/download"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"x".to_vec()))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dl.bin");
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        svc.download_to_path("/Photos/sunset.jpg", &dest).await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        let req = received
+            .iter()
+            .find(|r| r.url.path().ends_with("/files/download"))
+            .expect("download request was issued");
+        assert!(
+            req.headers.contains_key("authorization"),
+            "auth header missing"
+        );
+        let arg: serde_json::Value = serde_json::from_str(
+            req.headers.get("dropbox-api-arg").unwrap().to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(arg["path"], "/Photos/sunset.jpg");
+    }
+
+    #[tokio::test]
+    async fn download_to_path_returns_not_connected_without_tokens() {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dl.bin");
+        let svc = build_service(
+            &server,
+            Arc::new(InMemoryStore::new()),
+            Arc::new(FixedClock::new(1_000)),
+        )
+        .await;
+        let err = svc.download_to_path("/x", &dest).await.unwrap_err();
+        assert!(matches!(err, ServiceError::NotConnected));
+    }
+
+    #[tokio::test]
+    async fn download_to_path_streams_bytes_to_file() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/download"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_bytes(b"hello world".to_vec()),
+            )
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dl.bin");
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        let n = svc.download_to_path("/x.bin", &dest).await.unwrap();
+        assert_eq!(n, 11);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"hello world");
+    }
+
+    #[tokio::test]
+    async fn download_to_path_propagates_api_errors_without_writing() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/download"))
+            .respond_with(ResponseTemplate::new(409).set_body_string("path/not_found"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dl.bin");
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        let err = svc.download_to_path("/missing", &dest).await.unwrap_err();
+        assert!(matches!(err, ServiceError::Api { .. }));
+        assert!(!dest.exists(), "no file should be created on API failure");
+    }
+
+    #[tokio::test]
+    async fn get_thumbnail_returns_response_bytes() {
+        let server = MockServer::start().await;
+        // Body of the API arg JSON: easiest to assert via body_string_contains
+        // since header value matchers expect a single exact string.
+        Mock::given(method("POST"))
+            .and(path("/2/files/get_thumbnail_v2"))
+            .and(header("authorization", "Bearer access-1"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_bytes(b"\xff\xd8jpegbytes".to_vec()),
+            )
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        let bytes = svc.get_thumbnail("/Photos/x.jpg", "w256h256").await.unwrap();
+        assert_eq!(bytes, b"\xff\xd8jpegbytes");
+    }
+
+    #[tokio::test]
+    async fn get_thumbnail_sends_size_and_resource_in_arg_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/get_thumbnail_v2"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"x".to_vec()))
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        svc.get_thumbnail("/x.jpg", "w128h128").await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        let arg = received
+            .iter()
+            .find(|r| r.url.path().ends_with("/get_thumbnail_v2"))
+            .expect("thumbnail request was issued")
+            .headers
+            .get("dropbox-api-arg")
+            .expect("Dropbox-API-Arg header is set")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let parsed: serde_json::Value = serde_json::from_str(&arg).unwrap();
+        assert_eq!(parsed["format"], "jpeg");
+        assert_eq!(parsed["mode"], "fitone_bestfit");
+        assert_eq!(parsed["size"], "w128h128");
+        assert_eq!(parsed["resource"][".tag"], "path");
+        assert_eq!(parsed["resource"]["path"], "/x.jpg");
+    }
+
+    #[tokio::test]
+    async fn get_thumbnail_surfaces_api_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/get_thumbnail_v2"))
+            .respond_with(
+                ResponseTemplate::new(409).set_body_string("not_image_content"),
+            )
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        match svc.get_thumbnail("/x.txt", "w128h128").await.unwrap_err() {
+            ServiceError::Api { status, body } => {
+                assert_eq!(status, 409);
+                assert!(body.contains("not_image_content"));
+            }
+            e => panic!("wrong error: {e:?}"),
+        }
     }
 
     #[tokio::test]

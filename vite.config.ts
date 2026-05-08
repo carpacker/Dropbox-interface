@@ -55,6 +55,10 @@ export default defineConfig(async () => ({
         workspaceRoot,
         "./src/test/tauri-event-mock.ts",
       ),
+      "@tauri-apps/plugin-dialog": path.resolve(
+        workspaceRoot,
+        "./src/test/tauri-dialog-mock.ts",
+      ),
     },
     coverage: {
       provider: "v8",
