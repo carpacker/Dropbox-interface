@@ -62,6 +62,7 @@ import {
 } from "@/lib/tauri-dropbox";
 import { cn } from "@/lib/utils";
 import { getViewMode, setViewMode, type ViewMode } from "@/lib/view-mode";
+import { ViewModeToggle } from "@/components/view-mode-toggle";
 
 const INBOX_ID = "__inbox__";
 
@@ -1122,7 +1123,14 @@ export function PipelineView(props: PipelineViewProps) {
 
       <div className="flex flex-wrap items-center justify-end gap-2">
         {galleryAvailable ? (
-          <ViewModeToggle value={viewMode} onChange={updateViewMode} />
+          <ViewModeToggle<ViewMode>
+            value={viewMode}
+            onChange={updateViewMode}
+            options={[
+              { value: "list", icon: List, label: "List" },
+              { value: "gallery", icon: LayoutGrid, label: "Gallery" },
+            ]}
+          />
         ) : null}
         <FilterChip
           value={filtersByBucket[selectedId] ?? ""}
@@ -1213,53 +1221,6 @@ export function PipelineView(props: PipelineViewProps) {
       {helpOpen ? (
         <KeyboardHelpDialog onClose={() => setHelpOpen(false)} />
       ) : null}
-    </div>
-  );
-}
-
-function ViewModeToggle({
-  value,
-  onChange,
-}: {
-  value: ViewMode;
-  onChange: (next: ViewMode) => void;
-}) {
-  return (
-    <div
-      role="group"
-      aria-label="View mode"
-      className="inline-flex h-8 items-center overflow-hidden rounded-md border"
-    >
-      <button
-        type="button"
-        aria-label="List view"
-        aria-pressed={value === "list"}
-        onClick={() => onChange("list")}
-        className={cn(
-          "flex h-8 items-center gap-1 px-2 text-xs",
-          value === "list"
-            ? "bg-foreground text-background"
-            : "bg-background text-foreground hover:bg-muted",
-        )}
-      >
-        <List className="size-3.5" aria-hidden="true" />
-        <span className="hidden sm:inline">List</span>
-      </button>
-      <button
-        type="button"
-        aria-label="Gallery view"
-        aria-pressed={value === "gallery"}
-        onClick={() => onChange("gallery")}
-        className={cn(
-          "flex h-8 items-center gap-1 border-l px-2 text-xs",
-          value === "gallery"
-            ? "bg-foreground text-background"
-            : "bg-background text-foreground hover:bg-muted",
-        )}
-      >
-        <LayoutGrid className="size-3.5" aria-hidden="true" />
-        <span className="hidden sm:inline">Gallery</span>
-      </button>
     </div>
   );
 }

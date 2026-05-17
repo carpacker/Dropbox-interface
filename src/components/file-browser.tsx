@@ -1,6 +1,14 @@
-import { ChevronUp, File, Folder, RefreshCw } from "lucide-react";
+import {
+  ChevronUp,
+  File,
+  Folder,
+  LayoutGrid,
+  List,
+  RefreshCw,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { BrowserTile } from "@/components/browser-tile";
 import { FilterChip } from "@/components/filter-chip";
 import { LocalEntryRow } from "@/components/local-entry-row";
 import { PipelineView } from "@/components/pipeline-view";
@@ -16,6 +24,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { ViewModeToggle } from "@/components/view-mode-toggle";
+import {
+  getBrowserViewMode,
+  setBrowserViewMode,
+  type BrowserViewMode,
+} from "@/lib/browser-view-mode";
 import { filterByQuery } from "@/lib/filter";
 import { LocalPipelineOperator } from "@/lib/local-pipeline-operator";
 import { LocalPipelineSource } from "@/lib/local-pipeline-source";
@@ -34,11 +48,16 @@ import {
 } from "@/lib/sort";
 import {
   defaultLocalRoot,
+  imageSrc,
+  isImageFile,
   listDirectory,
   parentDirectory,
   type FsEntry,
 } from "@/lib/tauri-fs";
 import { formatRelativeTime } from "@/lib/time-format";
+
+/** Storage key used by `browser-view-mode` for the local file browser. */
+const FILES_BROWSER_ID = "files";
 
 export function FileBrowser() {
   const [currentPath, setCurrentPath] = useState("");
@@ -48,6 +67,13 @@ export function FileBrowser() {
   const [loading, setLoading] = useState(false);
   const [sort, setSort] = useState<SortPreference>(() => loadSortPreference());
   const [filter, setFilter] = useState("");
+  const [viewMode, setViewModeState] = useState<BrowserViewMode>(() =>
+    getBrowserViewMode(FILES_BROWSER_ID),
+  );
+  function updateViewMode(next: BrowserViewMode) {
+    setViewModeState(next);
+    setBrowserViewMode(FILES_BROWSER_ID, next);
+  }
 
   // Pipeline detection mirrors `DropboxApp`: each navigation parallel-
   // fetches both the listing and the config. A valid config switches
@@ -224,6 +250,14 @@ export function FileBrowser() {
                 : `${entries.length} item${entries.length === 1 ? "" : "s"}`}
           </p>
           <div className="flex items-center gap-2">
+            <ViewModeToggle<BrowserViewMode>
+              value={viewMode}
+              onChange={updateViewMode}
+              options={[
+                { value: "list", icon: List, label: "List" },
+                { value: "tile", icon: LayoutGrid, label: "Tile" },
+              ]}
+            />
             <FilterChip
               value={filter}
               onChange={setFilter}
@@ -288,32 +322,64 @@ export function FileBrowser() {
             )}
           />
         ) : (
-          <ScrollArea className="h-[min(55vh,520px)] rounded-lg border">
-            <div className="flex flex-col gap-1 p-2">
-              {loading ? (
-                <p className="px-2 py-6 text-sm text-muted-foreground">
-                  Loading…
-                </p>
-              ) : visibleEntries.length === 0 ? (
-                <p className="px-2 py-6 text-sm text-muted-foreground">
-                  {filter.trim() !== ""
-                    ? `No items match “${filter.trim()}”.`
-                    : "This folder is empty."}
-                </p>
-              ) : (
-                visibleEntries.map((entry) => (
+          <ScrollArea
+            className={
+              viewMode === "tile"
+                ? "h-[min(70vh,640px)] rounded-lg border"
+                : "h-[min(55vh,520px)] rounded-lg border"
+            }
+          >
+            {loading ? (
+              <p className="px-3 py-6 text-sm text-muted-foreground">
+                Loading…
+              </p>
+            ) : visibleEntries.length === 0 ? (
+              <p className="px-3 py-6 text-sm text-muted-foreground">
+                {filter.trim() !== ""
+                  ? `No items match “${filter.trim()}”.`
+                  : "This folder is empty."}
+              </p>
+            ) : viewMode === "tile" ? (
+              <ul className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+                {visibleEntries.map((entry) => (
+                  <li key={entry.path}>
+                    <BrowserTile
+                      entry={fsEntryToPipelineEntry(entry)}
+                      isImage={!entry.isDirectory && isImageFile(entry.path)}
+                      loadThumbnail={async (e) => imageSrc(e.path)}
+                      onOpenFolder={(p) => void loadPath(p)}
+                      // Local files don't have an inline preview in
+                      // the file browser today (the Photos app
+                      // surfaces that). Click-to-preview is wired so
+                      // the tile component stays generic; this
+                      // currently no-ops, matching the row's
+                      // "disabled for non-folders" behavior.
+                      onPreview={() => {}}
+                    />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="flex flex-col gap-0.5 p-1.5">
+                {visibleEntries.map((entry) => (
                   <Button
                     key={entry.path}
                     type="button"
                     variant="ghost"
-                    className="h-auto w-full justify-start gap-2 px-2 py-1.5 font-normal"
+                    className="h-auto w-full justify-start gap-2.5 rounded-md px-3 py-2 font-normal"
                     disabled={!entry.isDirectory}
                     onClick={() => void handleOpenEntry(entry)}
                   >
                     {entry.isDirectory ? (
-                      <Folder data-icon="inline-start" />
+                      <Folder
+                        data-icon="inline-start"
+                        className="text-foreground/70"
+                      />
                     ) : (
-                      <File data-icon="inline-start" />
+                      <File
+                        data-icon="inline-start"
+                        className="text-foreground/50"
+                      />
                     )}
                     <span className="min-w-0 flex-1 truncate text-left">
                       {entry.name}
@@ -329,9 +395,9 @@ export function FileBrowser() {
                       </span>
                     ) : null}
                   </Button>
-                ))
-              )}
-            </div>
+                ))}
+              </div>
+            )}
           </ScrollArea>
         )}
       </CardContent>

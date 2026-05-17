@@ -313,6 +313,40 @@ describe("FileBrowser — local pipeline detection", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("switches between list and tile view via the toggle, persisting the choice", async () => {
+    setupFs({
+      "/home/user": [
+        { name: "Pictures", path: "/home/user/Pictures", isDirectory: true },
+        { name: "shot.jpg", path: "/home/user/shot.jpg", isDirectory: false },
+      ],
+    });
+    localStorage.removeItem("dropbox-interface:browser-view-mode:v1");
+    const user = userEvent.setup();
+    render(<FileBrowser />);
+
+    // Default is list — clicking the folder works through the list button.
+    await screen.findByText("Pictures");
+    expect(
+      screen.getByRole("button", { name: /list view/i }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    // Flip to tile.
+    await user.click(screen.getByRole("button", { name: /tile view/i }));
+    // Tile-mode buttons read "Open folder X" / "Preview X".
+    expect(
+      screen.getByRole("button", { name: /open folder pictures/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /preview shot\.jpg/i }),
+    ).toBeInTheDocument();
+
+    // Preference persists.
+    const raw = localStorage.getItem(
+      "dropbox-interface:browser-view-mode:v1",
+    );
+    expect(JSON.parse(raw as string)).toEqual({ files: "tile" });
+  });
+
   it("recovers to the flat browser after navigating out of a pipeline folder", async () => {
     setupFs({
       "/home/user": [
