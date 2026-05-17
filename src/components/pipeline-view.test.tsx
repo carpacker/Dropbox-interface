@@ -3,10 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setInvokeHandler } from "@/test/tauri-core-mock";
+import { DropboxPipelineOperator } from "@/lib/dropbox-pipeline-operator";
 import { parseConfig } from "@/lib/pipeline/schema";
+import type { PipelineOperator } from "@/lib/pipeline/operator";
 import { type DropboxEntry } from "@/lib/tauri-dropbox";
 
 import { PipelineView } from "./pipeline-view";
+
+const dropboxOp: PipelineOperator = new DropboxPipelineOperator();
 
 function configFixture(overrides: Record<string, unknown> = {}) {
   const r = parseConfig({
@@ -76,6 +80,7 @@ function renderWith(props: {
   onSaveFile?: (entry: DropboxEntry) => void;
   savingPath?: string | null;
   config?: ReturnType<typeof configFixture>;
+  operator?: PipelineOperator;
   renderEntryRow?: React.ComponentProps<typeof PipelineView>["renderEntryRow"];
 }) {
   const config = props.config ?? configFixture();
@@ -83,6 +88,7 @@ function renderWith(props: {
     <PipelineView
       parentPath={props.parentPath ?? "/parent"}
       config={config}
+      operator={props.operator ?? dropboxOp}
       parentEntries={props.parentEntries ?? []}
       onNavigateInto={props.onNavigateInto ?? (() => {})}
       onParentRefresh={props.onParentRefresh ?? (() => {})}
@@ -1418,6 +1424,7 @@ describe("PipelineView — selection persistence across parent changes", () => {
       <PipelineView
         parentPath="/other"
         config={config}
+        operator={dropboxOp}
         parentEntries={[dropboxFolder("1__Processing", "/other/1__Processing")]}
         onNavigateInto={() => {}}
         onParentRefresh={() => {}}
@@ -1465,6 +1472,7 @@ describe("PipelineView — view-mode toggle", () => {
       <PipelineView
         parentPath="/parent"
         config={configFixture()}
+        operator={dropboxOp}
         parentEntries={[dropboxFolder("1__Processing"), file]}
         onNavigateInto={() => {}}
         onParentRefresh={() => {}}
@@ -1505,6 +1513,7 @@ describe("PipelineView — view-mode toggle", () => {
         <PipelineView
           parentPath={parentPath}
           config={configFixture()}
+          operator={dropboxOp}
           parentEntries={entries}
           onNavigateInto={() => {}}
           onParentRefresh={() => {}}
@@ -1544,6 +1553,7 @@ describe("PipelineView — keyboard navigation", () => {
       <PipelineView
         parentPath="/parent"
         config={configFixture()}
+        operator={dropboxOp}
         parentEntries={parentEntries}
         onNavigateInto={overrides.onNavigateInto ?? (() => {})}
         onParentRefresh={() => {}}

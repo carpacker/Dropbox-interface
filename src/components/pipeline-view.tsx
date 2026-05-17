@@ -45,9 +45,10 @@ import {
   type NotesByPath,
 } from "@/lib/pipeline-notes";
 import { filterByQuery } from "@/lib/filter";
-import { joinDropboxPath } from "@/lib/dropbox-pipeline-source";
 import { FilterChip } from "@/components/filter-chip";
 import { getRecentPipelines, setPinned } from "@/lib/pipeline-recents";
+import type { PipelineEntry } from "@/lib/pipeline/entry";
+import type { PipelineOperator } from "@/lib/pipeline/operator";
 import {
   loadSortPreference,
   saveSortPreference,
@@ -56,12 +57,8 @@ import {
 } from "@/lib/sort";
 import { SortDropdown } from "@/components/sort-dropdown";
 import {
-  dropboxCreateFolder,
   dropboxEntryToSortable,
-  dropboxListFolder,
-  dropboxMove,
   isDropboxImage,
-  type DropboxEntry,
 } from "@/lib/tauri-dropbox";
 import { cn } from "@/lib/utils";
 import { getViewMode, setViewMode, type ViewMode } from "@/lib/view-mode";
@@ -76,7 +73,7 @@ const EMPTY_SET: ReadonlySet<string> = Object.freeze(new Set<string>());
 
 type StateListing =
   | { kind: "loading" }
-  | { kind: "ready"; entries: DropboxEntry[] }
+  | { kind: "ready"; entries: PipelineEntry[] }
   | { kind: "error"; message: string };
 
 type Bucket =
@@ -93,8 +90,15 @@ type Bucket =
 type PipelineViewProps = {
   parentPath: string;
   config: PipelineConfig;
+  /**
+   * Backend adapter for the pipeline's mutating + listing operations
+   * (Promote, missing-state Create, lazy bucket loads, path joins). The
+   * caller plugs in `DropboxPipelineOperator` or `LocalPipelineOperator`
+   * — PipelineView itself stays backend-agnostic.
+   */
+  operator: PipelineOperator;
   /** Listing of the parent folder, already fetched by the caller. */
-  parentEntries: DropboxEntry[];
+  parentEntries: PipelineEntry[];
   /** Caller-driven navigation when the user opens a folder *inside* a state. */
   onNavigateInto: (path: string) => void;
   /**
@@ -103,11 +107,11 @@ type PipelineViewProps = {
    */
   onParentRefresh: () => void;
   /** Per-row actions delegated to the caller. */
-  onPreviewImage: (entry: DropboxEntry) => void;
-  onSaveFile: (entry: DropboxEntry) => void;
+  onPreviewImage: (entry: PipelineEntry) => void;
+  onSaveFile: (entry: PipelineEntry) => void;
   savingPath: string | null;
   renderEntryRow: (
-    entry: DropboxEntry,
+    entry: PipelineEntry,
     opts: {
       saving: boolean;
       onPreview: () => void;
@@ -144,7 +148,7 @@ type PipelineViewProps = {
    * available and the toggle is hidden — keeps the seam optional.
    */
   renderEntryTile?: (
-    entry: DropboxEntry,
+    entry: PipelineEntry,
     opts: {
       saving: boolean;
       onPreview: () => void;
@@ -201,6 +205,7 @@ export function PipelineView(props: PipelineViewProps) {
   const {
     parentPath,
     config,
+    operator,
     parentEntries,
     onNavigateInto,
     onParentRefresh,
@@ -342,17 +347,17 @@ export function PipelineView(props: PipelineViewProps) {
   const [notesByPath, setNotesByPath] = useState<NotesByPath>(() =>
     getAllNotes(),
   );
-  const [editingNoteEntry, setEditingNoteEntry] = useState<DropboxEntry | null>(
+  const [editingNoteEntry, setEditingNoteEntry] = useState<PipelineEntry | null>(
     null,
   );
 
-  function openNoteEditor(entry: DropboxEntry) {
+  function openNoteEditor(entry: PipelineEntry) {
     setEditingNoteEntry(entry);
   }
   function closeNoteEditor() {
     setEditingNoteEntry(null);
   }
-  function saveNote(entry: DropboxEntry, body: string) {
+  function saveNote(entry: PipelineEntry, body: string) {
     setNote(entry.path, body);
     setNotesByPath(getAllNotes());
     setEditingNoteEntry(null);
@@ -387,7 +392,7 @@ export function PipelineView(props: PipelineViewProps) {
     fetchedRef.current.add(stateId);
     void (async () => {
       try {
-        const entries = await dropboxListFolder(folderPath);
+        const entries = await operator.listChildren(folderPath);
         setStateListings((prev) => ({
           ...prev,
           [stateId]: { kind: "ready", entries },
@@ -435,9 +440,9 @@ export function PipelineView(props: PipelineViewProps) {
   ) {
     setActionError(null);
     setMovingPaths(new Set([entry.path]));
-    const toPath = joinDropboxPath(destFolderPath, entry.name);
+    const toPath = operator.joinPath(destFolderPath, entry.name);
     try {
-      await dropboxMove(entry.path, toPath);
+      await operator.move(entry.path, toPath);
       refreshBucket(sourceBucket, parentFolderOfPath(entry.path));
       refreshBucket(destBucket, destFolderPath);
       setUndoableMove({
@@ -471,8 +476,8 @@ export function PipelineView(props: PipelineViewProps) {
 
     const results = await Promise.allSettled(
       entries.map(async (e) => {
-        const toPath = joinDropboxPath(destFolderPath, e.name);
-        await dropboxMove(e.path, toPath);
+        const toPath = operator.joinPath(destFolderPath, e.name);
+        await operator.move(e.path, toPath);
         return {
           fromPath: e.path,
           toPath,
@@ -539,7 +544,7 @@ export function PipelineView(props: PipelineViewProps) {
     setMovingPaths(new Set(move.moves.map((m) => m.toPath)));
     try {
       const results = await Promise.allSettled(
-        move.moves.map((m) => dropboxMove(m.toPath, m.fromPath)),
+        move.moves.map((m) => operator.move(m.toPath, m.fromPath)),
       );
       const failed = results.filter((r) => r.status === "rejected");
       // Refresh once at the end whether all succeeded or some didn't.
@@ -561,7 +566,7 @@ export function PipelineView(props: PipelineViewProps) {
     setActionError(null);
     setCreatingState(state.id);
     try {
-      await dropboxCreateFolder(`${parentPath}/${state.folder}`);
+      await operator.createFolder(operator.joinPath(parentPath, state.folder));
       onParentRefresh();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
@@ -668,7 +673,7 @@ export function PipelineView(props: PipelineViewProps) {
     }));
     void (async () => {
       try {
-        const entries = await dropboxListFolder(folder.path);
+        const entries = await operator.listChildren(folder.path);
         settled = true;
         if (cancelled) return;
         setStateListings((prev) => ({
@@ -773,12 +778,12 @@ export function PipelineView(props: PipelineViewProps) {
     return { kind: "ready", entries: listing.entries };
   }, [selectedBucket, parentEntries, classification.inbox, stateListings]);
 
-  const visibleEntries = useMemo<DropboxEntry[]>(() => {
+  const visibleEntries = useMemo<PipelineEntry[]>(() => {
     if (bucketStatus.kind !== "ready") return [];
     const sorted = sortEntries(bucketStatus.entries, sort, {
       toSortable: dropboxEntryToSortable,
     });
-    return filterByQuery(sorted, activeFilter) as DropboxEntry[];
+    return filterByQuery(sorted, activeFilter) as PipelineEntry[];
   }, [bucketStatus, sort, activeFilter]);
 
   // Keyboard-nav focus state. Lives at the component level (not inside
@@ -802,7 +807,7 @@ export function PipelineView(props: PipelineViewProps) {
   const [helpOpen, setHelpOpen] = useState(false);
 
   const onPromoteEntry = useCallback(
-    (entry: DropboxEntry) => {
+    (entry: PipelineEntry) => {
       if (!promoteContext) return;
       void performMove(
         entry,
@@ -1336,7 +1341,7 @@ function NoteEditorModal({
   onSave,
   onClose,
 }: {
-  entry: DropboxEntry;
+  entry: PipelineEntry;
   initialBody: string;
   onSave: (body: string) => void;
   onClose: () => void;
@@ -1491,37 +1496,37 @@ type BucketStatus =
   | { kind: "missing" }
   | { kind: "loading" }
   | { kind: "error"; message: string }
-  | { kind: "ready"; entries: DropboxEntry[] };
+  | { kind: "ready"; entries: PipelineEntry[] };
 
 type RenderArgs = {
   bucket: Bucket | undefined;
   bucketStatus: BucketStatus;
   /** Sorted + filtered entries for the active bucket. */
-  visibleEntries: DropboxEntry[];
+  visibleEntries: PipelineEntry[];
   activeFilter: string;
   viewMode: ViewMode;
   focusedIndex: number;
-  onPreviewImage: (e: DropboxEntry) => void;
-  onSaveFile: (e: DropboxEntry) => void;
+  onPreviewImage: (e: PipelineEntry) => void;
+  onSaveFile: (e: PipelineEntry) => void;
   savingPath: string | null;
   onNavigateInto: (path: string) => void;
   renderEntryRow: PipelineViewProps["renderEntryRow"];
   renderEntryTile: PipelineViewProps["renderEntryTile"];
   promoteContext: PromoteContext | null;
   movingPaths: ReadonlySet<string>;
-  onPromote: (entry: DropboxEntry) => void;
+  onPromote: (entry: PipelineEntry) => void;
   /** BucketRef of the currently-rendered bucket; baked into drag payloads. */
   sourceBucketRef: BucketRef;
   /** Path of the row currently being dragged, so rendered rows can dim it. */
   draggingPath: string | null;
-  onDragStart: (entry: DropboxEntry) => void;
+  onDragStart: (entry: PipelineEntry) => void;
   onDragEnd: () => void;
   /** Selection state for the currently-rendered bucket. */
   selectedPaths: ReadonlySet<string>;
   onToggleSelect: (entryPath: string) => void;
   /** Notes table snapshot, used to drive the per-row indicator dot. */
   notesByPath: NotesByPath;
-  onOpenNote: (entry: DropboxEntry) => void;
+  onOpenNote: (entry: PipelineEntry) => void;
 };
 
 function renderBucketContents(args: RenderArgs): ReactNode {
@@ -1572,7 +1577,7 @@ function renderBucketContents(args: RenderArgs): ReactNode {
     : renderEntryList(args);
 }
 
-function rowHelpersFor(entry: DropboxEntry, args: RenderArgs) {
+function rowHelpersFor(entry: PipelineEntry, args: RenderArgs) {
   const promote = args.promoteContext
     ? {
         targetStateName: args.promoteContext.destStateName,
@@ -1597,7 +1602,7 @@ function rowHelpersFor(entry: DropboxEntry, args: RenderArgs) {
   };
 }
 
-function dragHandlersFor(entry: DropboxEntry, args: RenderArgs) {
+function dragHandlersFor(entry: PipelineEntry, args: RenderArgs) {
   return {
     onDragStart: (e: React.DragEvent<HTMLElement>) => {
       e.dataTransfer.setData(
@@ -1682,13 +1687,13 @@ function renderEntryGallery(args: RenderArgs) {
 }
 
 function byPath(
-  entries: DropboxEntry[],
+  entries: PipelineEntry[],
   handles: EntryHandle[],
-): DropboxEntry[] {
+): PipelineEntry[] {
   const map = new Map(entries.map((e) => [e.path, e]));
   return handles
     .map((h) => map.get(h.path))
-    .filter((e): e is DropboxEntry => e !== undefined);
+    .filter((e): e is PipelineEntry => e !== undefined);
 }
 
 /**

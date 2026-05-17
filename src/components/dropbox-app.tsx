@@ -30,6 +30,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { GalleryTile } from "@/components/gallery-tile";
 import { PipelineView } from "@/components/pipeline-view";
 import { SortDropdown } from "@/components/sort-dropdown";
+import { DropboxPipelineOperator } from "@/lib/dropbox-pipeline-operator";
 import { DropboxPipelineSource } from "@/lib/dropbox-pipeline-source";
 import { addRecentPipeline } from "@/lib/pipeline-recents";
 import { parseConfig, type ConfigIssue, type PipelineConfig } from "@/lib/pipeline/schema";
@@ -279,8 +280,9 @@ function RemoteBrowser({
     return filterByQuery(sorted, filter);
   }, [entries, sort, filter]);
 
-  // Stable instance — pure, no internal state worth caching across renders.
+  // Stable instances — pure, no internal state worth caching across renders.
   const [pipelineSource] = useState(() => new DropboxPipelineSource());
+  const [pipelineOperator] = useState(() => new DropboxPipelineOperator());
 
   const load = useCallback(
     async (next: string) => {
@@ -490,6 +492,7 @@ function RemoteBrowser({
           <PipelineView
             parentPath={path}
             config={pipelineConfig}
+            operator={pipelineOperator}
             parentEntries={entries}
             onNavigateInto={(p) => void load(p)}
             onParentRefresh={() => void load(path)}

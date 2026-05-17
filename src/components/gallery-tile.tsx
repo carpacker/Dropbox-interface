@@ -22,10 +22,10 @@ import {
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import type { PipelineEntry } from "@/lib/pipeline/entry";
 import { formatBytes } from "@/lib/sort";
 import {
   isDropboxImage,
-  type DropboxEntry,
   type DropboxThumbnailSize,
 } from "@/lib/tauri-dropbox";
 import { cn } from "@/lib/utils";
@@ -37,7 +37,7 @@ export type ThumbnailLoader = (
 ) => Promise<string>;
 
 export type GalleryTileProps = {
-  entry: DropboxEntry;
+  entry: PipelineEntry;
   saving: boolean;
   loadThumbnail: ThumbnailLoader;
   onOpenFolder: (path: string) => void;
@@ -231,7 +231,7 @@ function TileThumbnail({
   isImage,
   loadThumbnail,
 }: {
-  entry: DropboxEntry;
+  entry: PipelineEntry;
   isImage: boolean;
   loadThumbnail: ThumbnailLoader;
 }) {
