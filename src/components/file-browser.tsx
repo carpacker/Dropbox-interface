@@ -1,6 +1,7 @@
 import { ChevronUp, File, Folder, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { FilterChip } from "@/components/filter-chip";
 import { SortDropdown } from "@/components/sort-dropdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,6 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { filterByQuery } from "@/lib/filter";
 import {
   formatBytes,
   loadSortPreference,
@@ -35,10 +37,14 @@ export function FileBrowser() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [sort, setSort] = useState<SortPreference>(() => loadSortPreference());
+  const [filter, setFilter] = useState("");
 
   const loadPath = useCallback(async (path: string) => {
     setLoading(true);
     setError(null);
+    // Filter is per-listing; clear it when the listing changes so the
+    // user doesn't see "no matches" against a stale query.
+    setFilter("");
     try {
       const rows = await listDirectory(path);
       setCurrentPath(path);
@@ -72,10 +78,12 @@ export function FileBrowser() {
     };
   }, [loadPath]);
 
-  const sortedEntries = useMemo(
-    () => sortEntries(entries, sort),
-    [entries, sort],
-  );
+  // Sort first, then filter — keeping the visible order consistent
+  // with the global sort preference.
+  const visibleEntries = useMemo(() => {
+    const sorted = sortEntries(entries, sort);
+    return filterByQuery(sorted, filter);
+  }, [entries, sort, filter]);
 
   function updateSort(next: SortPreference) {
     setSort(next);
@@ -160,13 +168,23 @@ export function FileBrowser() {
           </div>
         </form>
 
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-muted-foreground">
-            {entries.length === 0
-              ? "Empty"
-              : `${entries.length} item${entries.length === 1 ? "" : "s"}`}
+            {filter.trim() !== ""
+              ? `${visibleEntries.length} of ${entries.length}`
+              : entries.length === 0
+                ? "Empty"
+                : `${entries.length} item${entries.length === 1 ? "" : "s"}`}
           </p>
-          <SortDropdown value={sort} onChange={updateSort} compact />
+          <div className="flex items-center gap-2">
+            <FilterChip
+              value={filter}
+              onChange={setFilter}
+              label="Filter folders"
+              placeholder="Filter…"
+            />
+            <SortDropdown value={sort} onChange={updateSort} compact />
+          </div>
         </div>
 
         {error ? (
@@ -183,12 +201,14 @@ export function FileBrowser() {
               <p className="px-2 py-6 text-sm text-muted-foreground">
                 Loading…
               </p>
-            ) : sortedEntries.length === 0 ? (
+            ) : visibleEntries.length === 0 ? (
               <p className="px-2 py-6 text-sm text-muted-foreground">
-                This folder is empty.
+                {filter.trim() !== ""
+                  ? `No items match “${filter.trim()}”.`
+                  : "This folder is empty."}
               </p>
             ) : (
-              sortedEntries.map((entry) => (
+              visibleEntries.map((entry) => (
                 <Button
                   key={entry.path}
                   type="button"

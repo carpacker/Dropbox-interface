@@ -5,6 +5,7 @@ import {
   dropboxAppKey,
   dropboxConnect,
   dropboxCreateFolder,
+  dropboxDelete,
   dropboxDisconnect,
   dropboxDownloadToTemp,
   dropboxGetThumbnail,
@@ -229,6 +230,29 @@ describe("invoke wrappers", () => {
       return folder;
     });
     await expect(dropboxCreateFolder("/2__ready")).resolves.toEqual(folder);
+  });
+
+  it("dropboxDelete forwards path and returns the deleted entry", async () => {
+    const file: DropboxEntry = {
+      kind: "file",
+      name: "old.txt",
+      path: "/old.txt",
+      displayPath: "/old.txt",
+      size: 5,
+      serverModified: "2025-01-02T00:00:00Z",
+    };
+    setInvokeHandler("dropbox_delete_v2", (args) => {
+      expect(args).toEqual({ appKey: "test-key", path: "/old.txt" });
+      return file;
+    });
+    await expect(dropboxDelete("/old.txt")).resolves.toEqual(file);
+  });
+
+  it("dropboxDelete surfaces Rust-side errors verbatim", async () => {
+    setInvokeHandler("dropbox_delete_v2", () => {
+      throw new Error("dropbox returned an error: 409 path_lookup/not_found");
+    });
+    await expect(dropboxDelete("/missing")).rejects.toThrow(/not_found/);
   });
 });
 

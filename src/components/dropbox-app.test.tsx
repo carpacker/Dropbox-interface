@@ -609,3 +609,163 @@ describe("DropboxApp — error and recovery", () => {
     );
   });
 });
+
+describe("DropboxApp — delete with confirm", () => {
+  function setupConnectedWithFile() {
+    const file = {
+      kind: "file" as const,
+      name: "draft.txt",
+      path: "/draft.txt",
+      displayPath: "/draft.txt",
+      size: 12,
+      serverModified: "2025-01-02T03:04:05Z",
+    };
+    setInvokeHandler("dropbox_status", () => ({
+      accountId: "dbid:1",
+      displayName: "Ada",
+      email: "a@b",
+    }));
+    let listing: unknown[] = [file];
+    setInvokeHandler("dropbox_list_folder", () => listing);
+    setInvokeHandler("dropbox_read_text_file", () => null);
+    return {
+      file,
+      removeFromListing() {
+        listing = [];
+      },
+    };
+  }
+
+  it("clicking the trash icon opens the confirm dialog without firing delete", async () => {
+    setupConnectedWithFile();
+    const deleteSpy = vi.fn();
+    setInvokeHandler("dropbox_delete_v2", deleteSpy);
+
+    const user = userEvent.setup();
+    render(<DropboxApp />);
+
+    await user.click(
+      await screen.findByRole("button", { name: /delete draft\.txt/i }),
+    );
+    expect(
+      await screen.findByRole("dialog", { name: /delete from dropbox/i }),
+    ).toBeInTheDocument();
+    expect(deleteSpy).not.toHaveBeenCalled();
+  });
+
+  it("Cancel closes the dialog and never calls delete", async () => {
+    setupConnectedWithFile();
+    const deleteSpy = vi.fn();
+    setInvokeHandler("dropbox_delete_v2", deleteSpy);
+
+    const user = userEvent.setup();
+    render(<DropboxApp />);
+
+    await user.click(
+      await screen.findByRole("button", { name: /delete draft\.txt/i }),
+    );
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: /delete from dropbox/i }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(deleteSpy).not.toHaveBeenCalled();
+  });
+
+  it("Delete fires dropbox_delete_v2, refreshes the listing, and shows a notice", async () => {
+    const ctx = setupConnectedWithFile();
+    const deleteSpy = vi.fn((args: unknown) => {
+      expect(args).toMatchObject({ path: "/draft.txt" });
+      ctx.removeFromListing();
+      return {
+        kind: "file",
+        name: "draft.txt",
+        path: "/draft.txt",
+        displayPath: "/draft.txt",
+        size: 12,
+        serverModified: "2025-01-02T03:04:05Z",
+      };
+    });
+    setInvokeHandler("dropbox_delete_v2", deleteSpy);
+
+    const user = userEvent.setup();
+    render(<DropboxApp />);
+
+    await user.click(
+      await screen.findByRole("button", { name: /delete draft\.txt/i }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: /^delete$/i }),
+    );
+
+    await waitFor(() => expect(deleteSpy).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByText(/deleted “draft\.txt”/i),
+    ).toBeInTheDocument();
+    // Row gone after the post-delete refresh.
+    expect(
+      screen.queryByRole("button", { name: /delete draft\.txt/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Esc cancels the dialog", async () => {
+    setupConnectedWithFile();
+    const user = userEvent.setup();
+    render(<DropboxApp />);
+    await user.click(
+      await screen.findByRole("button", { name: /delete draft\.txt/i }),
+    );
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: /delete from dropbox/i }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("a Dropbox-side error surfaces and the row stays", async () => {
+    setupConnectedWithFile();
+    setInvokeHandler("dropbox_delete_v2", () => {
+      throw new Error("dropbox returned an error: 409 path_lookup/not_found");
+    });
+
+    const user = userEvent.setup();
+    render(<DropboxApp />);
+    await user.click(
+      await screen.findByRole("button", { name: /delete draft\.txt/i }),
+    );
+    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/not_found/);
+    // Row still there.
+    expect(
+      screen.getByRole("button", { name: /delete draft\.txt/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("folders do NOT get a delete button (single-file scope this round)", async () => {
+    setInvokeHandler("dropbox_status", () => ({
+      accountId: "dbid:1",
+      displayName: "Ada",
+      email: "a@b",
+    }));
+    setInvokeHandler("dropbox_list_folder", () => [
+      {
+        kind: "folder",
+        name: "Photos",
+        path: "/photos",
+        displayPath: "/Photos",
+        size: null,
+        serverModified: null,
+      },
+    ]);
+    setInvokeHandler("dropbox_read_text_file", () => null);
+
+    render(<DropboxApp />);
+    await screen.findByRole("button", { name: /open folder photos/i });
+    expect(
+      screen.queryByRole("button", { name: /delete photos/i }),
+    ).not.toBeInTheDocument();
+  });
+});

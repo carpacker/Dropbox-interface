@@ -370,6 +370,25 @@ impl DropboxService {
         })
     }
 
+    /// Delete a single file or folder via `/files/delete_v2`. Returns
+    /// the metadata of the deleted entry. Dropbox keeps deleted
+    /// content in trash for 30 days; we surface that to the user via
+    /// the confirmation modal copy.
+    ///
+    /// This is the only fully-destructive verb in the surface — see
+    /// THREAT_MODEL §D8c for the design constraints (single item per
+    /// call, behind a confirm, no bulk delete in this round).
+    pub async fn delete_path(&self, path: &str) -> Result<DropboxEntry, ServiceError> {
+        let envelope: MetadataEnvelope = self
+            .rpc("/files/delete_v2", json!({ "path": path }))
+            .await?;
+        entry_from_raw(envelope.metadata).ok_or_else(|| {
+            ServiceError::Decode(
+                "delete_v2 returned metadata with an unexpected .tag".into(),
+            )
+        })
+    }
+
     /// Shared helper for JSON-in/JSON-out RPC endpoints under
     /// `api.dropboxapi.com/2/...`. Refreshes the access token if needed,
     /// posts the JSON body, and decodes the response.
@@ -1197,6 +1216,65 @@ mod tests {
         )
         .await;
         let err = svc.create_folder("/x").await.unwrap_err();
+        assert!(matches!(err, ServiceError::NotConnected));
+    }
+
+    #[tokio::test]
+    async fn delete_path_returns_typed_entry_for_a_file() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/delete_v2"))
+            .and(body_string_contains("\"path\":\"/Photos/old.jpg\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "metadata": {
+                    ".tag": "file",
+                    "name": "old.jpg",
+                    "path_lower": "/photos/old.jpg",
+                    "path_display": "/Photos/old.jpg",
+                    "size": 12,
+                    "server_modified": "2025-01-02T03:04:05Z"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        let entry = svc.delete_path("/Photos/old.jpg").await.unwrap();
+        assert_eq!(entry.name, "old.jpg");
+        assert_eq!(entry.path, "/photos/old.jpg");
+    }
+
+    #[tokio::test]
+    async fn delete_path_surfaces_path_lookup_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/2/files/delete_v2"))
+            .respond_with(ResponseTemplate::new(409).set_body_string(
+                r#"{"error_summary":"path_lookup/not_found/.","error":{".tag":"path_lookup","path_lookup":{".tag":"not_found"}}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let svc = build_service(&server, fresh_store(), Arc::new(FixedClock::new(1_000))).await;
+        match svc.delete_path("/missing").await.unwrap_err() {
+            ServiceError::Api { status, body } => {
+                assert_eq!(status, 409);
+                assert!(body.contains("not_found"));
+            }
+            e => panic!("wrong error: {e:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_path_returns_not_connected_without_tokens() {
+        let server = MockServer::start().await;
+        let svc = build_service(
+            &server,
+            Arc::new(InMemoryStore::new()),
+            Arc::new(FixedClock::new(1_000)),
+        )
+        .await;
+        let err = svc.delete_path("/x").await.unwrap_err();
         assert!(matches!(err, ServiceError::NotConnected));
     }
 

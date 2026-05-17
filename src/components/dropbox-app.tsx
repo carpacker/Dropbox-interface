@@ -10,6 +10,7 @@ import {
   MessageSquare,
   Plug,
   RefreshCw,
+  Trash2,
   X,
 } from "lucide-react";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -25,6 +26,8 @@ import {
 } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { GalleryTile } from "@/components/gallery-tile";
 import { PipelineView } from "@/components/pipeline-view";
 import { SortDropdown } from "@/components/sort-dropdown";
 import { DropboxPipelineSource } from "@/lib/dropbox-pipeline-source";
@@ -37,9 +40,12 @@ import {
   sortEntries,
   type SortPreference,
 } from "@/lib/sort";
+import { filterByQuery } from "@/lib/filter";
 import { formatRelativeTime } from "@/lib/time-format";
+import { FilterChip } from "@/components/filter-chip";
 import {
   dropboxConnect,
+  dropboxDelete,
   dropboxDisconnect,
   dropboxDownloadToTemp,
   dropboxEntryToSortable,
@@ -231,6 +237,25 @@ function RemoteBrowser({
   const [preview, setPreview] = useState<Preview | null>(null);
   const [savingPath, setSavingPath] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  // Auto-clear the green notice after a few seconds so it doesn't
+  // hang around through a folder navigation. 6s is long enough to read,
+  // short enough to feel ephemeral. Cleared early when the user kicks
+  // off another save/delete (those paths setSavedNotice(null) first).
+  useEffect(() => {
+    if (savedNotice === null) return;
+    const id = setTimeout(() => setSavedNotice(null), 6_000);
+    return () => clearTimeout(id);
+  }, [savedNotice]);
+  /**
+   * The entry the user is being asked to confirm deletion for. `null`
+   * = no confirmation visible. Set when the user clicks the trash
+   * icon on a row; cleared on confirm or cancel.
+   */
+  const [deletePending, setDeletePending] = useState<DropboxEntry | null>(
+    null,
+  );
+  /** Path of an in-flight delete; disables the row's button while pending. */
+  const [deletingPath, setDeletingPath] = useState<string | null>(null);
   const [pipelineConfig, setPipelineConfig] = useState<PipelineConfig | null>(
     null,
   );
@@ -240,19 +265,19 @@ function RemoteBrowser({
   const [sort, setSort] = useState<SortPreference>(() =>
     loadSortPreference(),
   );
+  const [filter, setFilter] = useState("");
 
   function updateSort(next: SortPreference) {
     setSort(next);
     saveSortPreference(next);
   }
 
-  const sortedFlatEntries = useMemo(
-    () =>
-      sortEntries(entries, sort, {
-        toSortable: dropboxEntryToSortable,
-      }),
-    [entries, sort],
-  );
+  const visibleFlatEntries = useMemo(() => {
+    const sorted = sortEntries(entries, sort, {
+      toSortable: dropboxEntryToSortable,
+    });
+    return filterByQuery(sorted, filter);
+  }, [entries, sort, filter]);
 
   // Stable instance — pure, no internal state worth caching across renders.
   const [pipelineSource] = useState(() => new DropboxPipelineSource());
@@ -265,6 +290,8 @@ function RemoteBrowser({
       // against the new path's listing.
       setPipelineConfig(null);
       setPipelineIssues(null);
+      // Filter is per-listing.
+      setFilter("");
       try {
         const [rows, rawConfig] = await Promise.all([
           dropboxListFolder(next),
@@ -355,6 +382,24 @@ function RemoteBrowser({
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSavingPath(null);
+    }
+  }
+
+  async function performDelete() {
+    if (!deletePending) return;
+    const entry = deletePending;
+    setDeletingPath(entry.path);
+    try {
+      await dropboxDelete(entry.path);
+      setDeletePending(null);
+      setSavedNotice(`Deleted “${entry.name}”. Restore from Dropbox trash within 30 days if needed.`);
+      // Refresh the listing so the row disappears.
+      await load(path);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setDeletePending(null);
+    } finally {
+      setDeletingPath(null);
     }
   }
 
@@ -461,18 +506,58 @@ function RemoteBrowser({
                 promote={opts.promote}
                 select={opts.select}
                 note={opts.note}
+                delete={
+                  entry.kind === "file"
+                    ? {
+                        inFlight: deletingPath === entry.path,
+                        onClick: () => setDeletePending(entry),
+                      }
+                    : undefined
+                }
+              />
+            )}
+            renderEntryTile={(entry, opts) => (
+              <GalleryTile
+                entry={entry}
+                saving={opts.saving}
+                loadThumbnail={dropboxGetThumbnail}
+                onOpenFolder={opts.onOpenFolder}
+                onPreview={opts.onPreview}
+                onSave={opts.onSave}
+                promote={opts.promote}
+                select={opts.select}
+                note={opts.note}
+                focused={opts.focused}
+                delete={
+                  entry.kind === "file"
+                    ? {
+                        inFlight: deletingPath === entry.path,
+                        onClick: () => setDeletePending(entry),
+                      }
+                    : undefined
+                }
               />
             )}
           />
         ) : (
           <>
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs text-muted-foreground">
-                {entries.length === 0
-                  ? "Empty"
-                  : `${entries.length} item${entries.length === 1 ? "" : "s"}`}
+                {filter.trim() !== ""
+                  ? `${visibleFlatEntries.length} of ${entries.length}`
+                  : entries.length === 0
+                    ? "Empty"
+                    : `${entries.length} item${entries.length === 1 ? "" : "s"}`}
               </p>
-              <SortDropdown value={sort} onChange={updateSort} compact />
+              <div className="flex items-center gap-2">
+                <FilterChip
+                  value={filter}
+                  onChange={setFilter}
+                  label="Filter Dropbox listing"
+                  placeholder="Filter…"
+                />
+                <SortDropdown value={sort} onChange={updateSort} compact />
+              </div>
             </div>
             <ScrollArea className="h-[min(55vh,520px)] rounded-lg border">
               <ul className="flex flex-col gap-1 p-2">
@@ -480,12 +565,14 @@ function RemoteBrowser({
                   <li className="px-2 py-6 text-sm text-muted-foreground">
                     Loading…
                   </li>
-                ) : sortedFlatEntries.length === 0 ? (
+                ) : visibleFlatEntries.length === 0 ? (
                   <li className="px-2 py-6 text-sm text-muted-foreground">
-                    This folder is empty.
+                    {filter.trim() !== ""
+                      ? `No items match “${filter.trim()}”.`
+                      : "This folder is empty."}
                   </li>
                 ) : (
-                  sortedFlatEntries.map((entry) => (
+                  visibleFlatEntries.map((entry) => (
                     <li key={entry.path}>
                       <EntryRow
                         entry={entry}
@@ -493,6 +580,14 @@ function RemoteBrowser({
                         onOpenFolder={(p) => void load(p)}
                         onPreview={() => void openPreview(entry)}
                         onSave={() => void handleSave(entry)}
+                        delete={
+                          entry.kind === "file"
+                            ? {
+                                inFlight: deletingPath === entry.path,
+                                onClick: () => setDeletePending(entry),
+                              }
+                            : undefined
+                        }
                       />
                     </li>
                   ))
@@ -509,6 +604,30 @@ function RemoteBrowser({
           onClose={() => setPreview(null)}
         />
       ) : null}
+
+      <ConfirmDialog
+        open={deletePending !== null}
+        title="Delete from Dropbox?"
+        body={
+          deletePending ? (
+            <>
+              <p>
+                <strong>{deletePending.name}</strong> will be deleted from
+                your Dropbox account. This is reversible from the Dropbox
+                trash for 30 days, but not from inside this app.
+              </p>
+              <p className="mt-2 break-all font-mono text-xs">
+                {deletePending.path}
+              </p>
+            </>
+          ) : null
+        }
+        confirmLabel="Delete"
+        destructive
+        busy={deletingPath !== null}
+        onConfirm={() => void performDelete()}
+        onCancel={() => setDeletePending(null)}
+      />
     </Card>
   );
 }
@@ -542,6 +661,11 @@ type EntryRowProps = {
     hasNote: boolean;
     onClick: () => void;
   };
+  /** Destructive delete affordance. Confirmation lives on the caller. */
+  delete?: {
+    inFlight: boolean;
+    onClick: () => void;
+  };
 };
 
 function EntryRow({
@@ -553,6 +677,7 @@ function EntryRow({
   promote,
   select,
   note,
+  delete: deleteAction,
 }: EntryRowProps) {
   const isImage = isDropboxImage(entry);
   const isFolder = entry.kind === "folder";
@@ -656,6 +781,19 @@ function EntryRow({
           aria-label={`Save ${entry.name} to disk`}
         >
           <Download data-icon="inline-start" />
+        </Button>
+      ) : null}
+      {deleteAction ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          disabled={deleteAction.inFlight}
+          onClick={deleteAction.onClick}
+          aria-label={`Delete ${entry.name}`}
+          className="text-destructive hover:bg-destructive/10"
+        >
+          <Trash2 data-icon="inline-start" />
         </Button>
       ) : null}
     </div>

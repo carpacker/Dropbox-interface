@@ -177,6 +177,29 @@ local-FS backend trivial later.
 editor doesn't have to play whack-a-mole; CI / lint can list every
 problem at once.
 
+### D-P7. View mode is a thin presentational toggle, not a config knob.
+Whether a pipeline renders as a list or a thumbnail gallery is a
+local UI preference, not part of `.dropbox-interface.json`. Two
+reasons:
+
+1. The team-shared config should describe the *workflow* (states,
+   names, ordering). The same pipeline might be image-heavy for
+   one operator's review session and doc-heavy for another's;
+   forcing a global per-pipeline default would be wrong.
+2. Persisting per *path* under `dropbox-interface:pipeline-view-mode:v1`
+   keeps the seam local to the renderer — `PipelineView` only renders
+   gallery when the caller supplies a `renderEntryTile`, so a
+   future local-FS pipeline view can opt in (or out) without the
+   model layer noticing. Schema stays untouched.
+
+### D-P8. Keyboard nav lives at the panel, not on individual rows.
+The active bucket panel is `tabIndex={0}` and owns the keydown
+handler; rows don't manage their own focus. This avoids a forest of
+arrow-key listeners and stays compatible with virtualized lists if
+we ever add them. The handler bails out when the keydown originated
+in an `<input>`, `<textarea>`, or contenteditable so the filter chip
+and note editor keep working without a special bypass.
+
 ## What we explicitly do not support yet
 
 - **Inheritance from ancestor folders.** Add later behind a flag.
@@ -222,15 +245,19 @@ Done:
     `Promise.allSettled`, batch Undo).
 12. ✅ **Local-only notes** keyed by Dropbox path
     (`pipeline-notes.ts` + Note button + editor modal).
+13. ✅ **`delete_v2`** with confirm modal. See THREAT_MODEL §D8e.
+14. ✅ **Filter chip per bucket** (`lib/filter.ts`) and global
+    settings panel (theme + dashboard layout) for the shell.
+15. ✅ **Gallery view + keyboard nav.** Per-pipeline list/gallery
+    toggle (`view-mode.ts`); `GalleryTile` mirrors the row
+    affordances; panel owns j/k/Enter/Space/p/Esc/?.
 
 Next:
-
-13. **`delete_v2`** (when there's a clear use case). Behind a confirm.
-14. **Team-shared notes** if/when policy flips on
+16. **Team-shared notes** if/when policy flips on
     `files.content.write` — the helper is shaped so the storage
     backend can swap from `localStorage` to a Dropbox sidecar
     file (`.dropbox-interface-notes.json`) without touching the UI.
-15. **Local backend** (optional). Mirror `DropboxPipelineSource` for
+17. **Local backend** (optional). Mirror `DropboxPipelineSource` for
     the local FS so the existing `FileBrowser` can host pipelines too.
 
 ## Updating this doc

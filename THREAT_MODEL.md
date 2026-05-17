@@ -127,8 +127,26 @@ Every successful Promote sets a transient `undoableMove` record in the
 view that auto-clears after 8s but offers an explicit Undo button (a
 second `dropbox_move_v2` call in reverse). Combined with Dropbox's
 30-day trash, a misclick is recoverable both immediately and
-long-term. We deliberately did **not** ship `delete_v2` in this round
-to keep the blast radius narrow; that's a separate round when needed.
+long-term.
+
+### D8e. Delete is gated behind a confirm modal.
+`dropbox_delete_v2` is the only fully-destructive verb in our
+surface. Constraints:
+- **Single item per call.** No bulk-delete API; the user can only
+  delete one entry at a time. (Bulk-promote is fine — it's
+  reversible. Bulk-delete is not, even with trash.)
+- **No keyboard shortcut.** Trash icon must be clicked explicitly.
+- **Confirmation modal required.** `<ConfirmDialog>` shows the
+  entry name, full path, and explicit copy that recovery is via
+  Dropbox trash within 30 days, **not** from inside this app.
+- **No "Delete" button for folders** in this round. Recursive
+  delete on a state folder is high-blast-radius (could nuke 100s
+  of items in one click). Files only.
+- The dialog uses `destructive` styling (red confirm button)
+  and disables both buttons while the API call is in flight, so
+  double-clicks can't fire two deletes.
+- `Esc` cancels; `Cancel` cancels; backdrop click cancels. Only an
+  explicit Delete-button click confirms.
 
 ### D9. Capabilities are minimal.
 `src-tauri/capabilities/default.json`: `core:default`, `opener:default`,

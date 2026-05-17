@@ -1441,3 +1441,293 @@ describe("PipelineView — selection persistence across parent changes", () => {
     ).toContain("/other/1__Processing");
   });
 });
+
+describe("PipelineView — view-mode toggle", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("hides the toggle when no tile renderer is supplied", () => {
+    setupDropboxListing({});
+    renderWith({
+      parentEntries: [dropboxFolder("1__Processing")],
+    });
+    expect(
+      screen.queryByRole("button", { name: /gallery view/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders the toggle and the gallery tile when renderEntryTile is supplied", async () => {
+    setupDropboxListing({});
+    const file = dropboxFile("loose.jpg", "/parent/loose.jpg");
+    const user = userEvent.setup();
+    render(
+      <PipelineView
+        parentPath="/parent"
+        config={configFixture()}
+        parentEntries={[dropboxFolder("1__Processing"), file]}
+        onNavigateInto={() => {}}
+        onParentRefresh={() => {}}
+        onPreviewImage={() => {}}
+        onSaveFile={() => {}}
+        savingPath={null}
+        renderEntryRow={(entry) => (
+          <button data-testid={`row-${entry.path}`}>{entry.name}</button>
+        )}
+        renderEntryTile={(entry, opts) => (
+          <button
+            data-testid={`tile-${entry.path}`}
+            data-focused={opts.focused ? "true" : undefined}
+          >
+            {entry.name}
+          </button>
+        )}
+      />,
+    );
+    // Default = list mode → row, no tile.
+    expect(screen.getByTestId(`row-${file.path}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`tile-${file.path}`)).not.toBeInTheDocument();
+
+    // Switch to Gallery.
+    await user.click(screen.getByRole("button", { name: /gallery view/i }));
+    expect(screen.queryByTestId(`row-${file.path}`)).not.toBeInTheDocument();
+    expect(screen.getByTestId(`tile-${file.path}`)).toBeInTheDocument();
+  });
+
+  it("persists view-mode per parent path", async () => {
+    setupDropboxListing({});
+    const user = userEvent.setup();
+    const fileA = dropboxFile("a.jpg", "/A/a.jpg");
+    const fileB = dropboxFile("b.jpg", "/B/b.jpg");
+
+    function harness(parentPath: string, entries: DropboxEntry[]) {
+      return (
+        <PipelineView
+          parentPath={parentPath}
+          config={configFixture()}
+          parentEntries={entries}
+          onNavigateInto={() => {}}
+          onParentRefresh={() => {}}
+          onPreviewImage={() => {}}
+          onSaveFile={() => {}}
+          savingPath={null}
+          renderEntryRow={(entry) => (
+            <button data-testid={`row-${entry.path}`}>{entry.name}</button>
+          )}
+          renderEntryTile={(entry) => (
+            <button data-testid={`tile-${entry.path}`}>{entry.name}</button>
+          )}
+        />
+      );
+    }
+
+    const { rerender } = render(harness("/A", [fileA]));
+    await user.click(screen.getByRole("button", { name: /gallery view/i }));
+    expect(screen.getByTestId(`tile-${fileA.path}`)).toBeInTheDocument();
+
+    // Different pipeline keeps its own preference (still list).
+    rerender(harness("/B", [fileB]));
+    expect(screen.getByTestId(`row-${fileB.path}`)).toBeInTheDocument();
+
+    // Returning to /A restores gallery from localStorage.
+    rerender(harness("/A", [fileA]));
+    expect(screen.getByTestId(`tile-${fileA.path}`)).toBeInTheDocument();
+  });
+});
+
+describe("PipelineView — keyboard navigation", () => {
+  function panelHarness(
+    parentEntries: DropboxEntry[],
+    overrides: Partial<React.ComponentProps<typeof PipelineView>> = {},
+  ) {
+    return render(
+      <PipelineView
+        parentPath="/parent"
+        config={configFixture()}
+        parentEntries={parentEntries}
+        onNavigateInto={overrides.onNavigateInto ?? (() => {})}
+        onParentRefresh={() => {}}
+        onPreviewImage={overrides.onPreviewImage ?? (() => {})}
+        onSaveFile={() => {}}
+        savingPath={null}
+        renderEntryRow={(entry, opts) => (
+          <div
+            data-testid={`row-${entry.path}`}
+            data-selected={opts.select?.selected ? "true" : undefined}
+          >
+            {entry.name}
+          </div>
+        )}
+      />,
+    );
+  }
+
+  it("j moves focus down and k moves it up across visible rows", async () => {
+    setupDropboxListing({});
+    const a = dropboxFile("a.txt", "/parent/a.txt");
+    const b = dropboxFile("b.txt", "/parent/b.txt");
+    const c = dropboxFile("c.txt", "/parent/c.txt");
+    panelHarness([dropboxFolder("1__Processing"), a, b, c]);
+
+    const panel = screen.getByRole("tabpanel");
+    panel.focus();
+
+    // Initial focused index is 0.
+    fireEvent.keyDown(panel, { key: "j" });
+    fireEvent.keyDown(panel, { key: "j" });
+    // visibleEntries are sorted folders-first then by name asc; only files
+    // here so order is a, b, c.
+    const li2 = screen.getByTestId(`row-${c.path}`).closest("li");
+    expect(li2?.getAttribute("data-focused")).toBe("true");
+
+    fireEvent.keyDown(panel, { key: "k" });
+    const li1 = screen.getByTestId(`row-${b.path}`).closest("li");
+    expect(li1?.getAttribute("data-focused")).toBe("true");
+  });
+
+  it("Enter on a folder calls onNavigateInto", async () => {
+    setupDropboxListing({});
+    const navSpy = vi.fn();
+    panelHarness(
+      [dropboxFolder("1__Processing"), dropboxFolder("subdir", "/parent/subdir")],
+      { onNavigateInto: navSpy },
+    );
+
+    const panel = screen.getByRole("tabpanel");
+    panel.focus();
+    // visibleEntries with folders-first sort: only 'subdir' shows in inbox
+    // (1__Processing is a state folder, classified out).
+    fireEvent.keyDown(panel, { key: "Enter" });
+    expect(navSpy).toHaveBeenCalledWith("/parent/subdir");
+  });
+
+  it("Enter on an image calls onPreviewImage", async () => {
+    setupDropboxListing({});
+    const file = dropboxFile("hero.jpg", "/parent/hero.jpg");
+    const previewSpy = vi.fn();
+    panelHarness([dropboxFolder("1__Processing"), file], {
+      onPreviewImage: previewSpy,
+    });
+
+    const panel = screen.getByRole("tabpanel");
+    panel.focus();
+    fireEvent.keyDown(panel, { key: "Enter" });
+    expect(previewSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "/parent/hero.jpg" }),
+    );
+  });
+
+  it("Space toggles selection on the focused row", async () => {
+    setupDropboxListing({});
+    const a = dropboxFile("a.txt", "/parent/a.txt");
+    panelHarness([dropboxFolder("1__Processing"), a]);
+
+    const panel = screen.getByRole("tabpanel");
+    panel.focus();
+    fireEvent.keyDown(panel, { key: " " });
+
+    const row = screen.getByTestId(`row-${a.path}`);
+    expect(row.getAttribute("data-selected")).toBe("true");
+
+    fireEvent.keyDown(panel, { key: " " });
+    expect(row.getAttribute("data-selected")).toBeNull();
+  });
+
+  it("Esc clears the active filter, then a subsequent Esc clears selection", async () => {
+    setupDropboxListing({});
+    const a = dropboxFile("a.txt", "/parent/a.txt");
+    const user = userEvent.setup();
+    panelHarness([dropboxFolder("1__Processing"), a]);
+
+    // Type a filter that matches.
+    const filter = screen.getByLabelText(/filter inbox/i);
+    await user.type(filter, "a");
+    expect((filter as HTMLInputElement).value).toBe("a");
+
+    const panel = screen.getByRole("tabpanel");
+    panel.focus();
+    // Select the focused row first.
+    fireEvent.keyDown(panel, { key: " " });
+    expect(
+      screen.getByTestId(`row-${a.path}`).getAttribute("data-selected"),
+    ).toBe("true");
+
+    // First Esc clears the filter.
+    fireEvent.keyDown(panel, { key: "Escape" });
+    expect((filter as HTMLInputElement).value).toBe("");
+    // Selection still active.
+    expect(
+      screen.getByTestId(`row-${a.path}`).getAttribute("data-selected"),
+    ).toBe("true");
+
+    // Second Esc clears selection.
+    fireEvent.keyDown(panel, { key: "Escape" });
+    expect(
+      screen.getByTestId(`row-${a.path}`).getAttribute("data-selected"),
+    ).toBeNull();
+  });
+
+  it("p promotes the focused state-bucket item to the next state", async () => {
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+    const file = dropboxFile("a.png", "/parent/1__Processing/a.png");
+    setInvokeHandler("dropbox_list_folder", (args) => {
+      const path = (args as { path: string }).path;
+      return path === "/parent/1__Processing" ? [file] : [];
+    });
+    const moveSpy = vi.fn(() => ({
+      kind: "file",
+      name: "a.png",
+      path: "/parent/2__ready/a.png",
+      displayPath: "/parent/2__ready/a.png",
+      size: 1,
+      serverModified: null,
+    }));
+    setInvokeHandler("dropbox_move_v2", moveSpy);
+
+    const user = userEvent.setup();
+    panelHarness([dropboxFolder("1__Processing"), dropboxFolder("2__ready")]);
+
+    // Move into Processing bucket.
+    await user.click(screen.getByRole("tab", { name: /processing/i }));
+    await screen.findByTestId(`row-${file.path}`);
+
+    const panel = screen.getByRole("tabpanel");
+    panel.focus();
+    fireEvent.keyDown(panel, { key: "p" });
+    await waitFor(() => expect(moveSpy).toHaveBeenCalled());
+    expect(moveSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromPath: "/parent/1__Processing/a.png",
+        toPath: "/parent/2__ready/a.png",
+      }),
+    );
+  });
+
+  it("? opens the keyboard help dialog", async () => {
+    setupDropboxListing({});
+    panelHarness([dropboxFolder("1__Processing")]);
+
+    const panel = screen.getByRole("tabpanel");
+    panel.focus();
+    fireEvent.keyDown(panel, { key: "?" });
+    expect(
+      screen.getByRole("dialog", { name: /keyboard shortcuts/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("ignores letter keys typed inside the filter input", async () => {
+    setupDropboxListing({});
+    const a = dropboxFile("a.txt", "/parent/a.txt");
+    const user = userEvent.setup();
+    panelHarness([dropboxFolder("1__Processing"), a]);
+
+    // Click the filter, type "j" — must not move focus on the panel,
+    // must end up in the input value.
+    const filter = screen.getByLabelText(/filter inbox/i);
+    await user.click(filter);
+    await user.type(filter, "j");
+    expect((filter as HTMLInputElement).value).toBe("j");
+    // Row 'a.txt' doesn't match "j" → empty-state shows.
+    expect(screen.queryByTestId(`row-${a.path}`)).not.toBeInTheDocument();
+  });
+});

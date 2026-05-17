@@ -136,6 +136,19 @@ export function dropboxCreateFolder(path: string) {
   });
 }
 
+/**
+ * Delete a single file or folder via /files/delete_v2. Callers MUST
+ * gate this behind a confirmation modal. Dropbox keeps the deleted
+ * item in trash for 30 days; restoring is a manual step on
+ * dropbox.com.
+ */
+export function dropboxDelete(path: string) {
+  return invoke<DropboxEntry>("dropbox_delete_v2", {
+    appKey: dropboxAppKey(),
+    path,
+  });
+}
+
 /** Wrap a temp/preview path so it can be used as an `<img src>`. */
 export function dropboxLocalSrc(localPath: string): string {
   return convertFileSrc(localPath);
