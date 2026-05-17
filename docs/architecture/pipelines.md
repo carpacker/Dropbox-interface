@@ -200,6 +200,29 @@ we ever add them. The handler bails out when the keydown originated
 in an `<input>`, `<textarea>`, or contenteditable so the filter chip
 and note editor keep working without a special bypass.
 
+### D-P9. Operations seam (`PipelineOperator`) is paired with the source seam.
+`PipelineSource` was always for *reads* (config + listings). The
+mutating verbs — move, create-folder, list-during-promote — used to
+live as direct `dropbox*` calls inside `PipelineView`, which made
+adding a local-FS backend impossible. `PipelineOperator` formalizes
+that surface as four methods (`move`, `createFolder`,
+`listChildren`, `joinPath`) and `PipelineView` depends only on the
+interface. Each backend ships its own pair: `DropboxPipelineSource`
++ `DropboxPipelineOperator`, `LocalPipelineSource` +
+`LocalPipelineOperator`. Delete is deliberately **not** on the
+interface — see §D8e: it's a per-backend concern owned by the
+caller, with the Dropbox confirm modal on one side and (today)
+nothing on the local side.
+
+### D-P10. Local pipelines surface fewer destructive verbs than Dropbox.
+The local-FS pipeline view skips Save-to-disk (the file browser is
+the disk) and skips Delete entirely. `local_move` and
+`local_create_folder` are reversible — undo, drag back, recreate —
+but a deleted local file is gone unless it lands in OS trash, which
+isn't a guarantee across platforms. Adding local delete should go
+through the same scrutiny as §D8e and gate on at least the same
+confirm modal *plus* a "type the name" affordance.
+
 ## What we explicitly do not support yet
 
 - **Inheritance from ancestor folders.** Add later behind a flag.
@@ -251,6 +274,12 @@ Done:
 15. ✅ **Gallery view + keyboard nav.** Per-pipeline list/gallery
     toggle (`view-mode.ts`); `GalleryTile` mirrors the row
     affordances; panel owns j/k/Enter/Space/p/Esc/?.
+16. ✅ **Local-FS backend.** `local_read_text_file`,
+    `local_move`, `local_create_folder` Rust commands;
+    `LocalPipelineSource` + `LocalPipelineOperator`; `PipelineView`
+    refactored against a new `PipelineOperator` interface; the
+    `FileBrowser` auto-detects pipelines on every navigation. No
+    new threat-model surface (existing local-FS commands only).
 
 Next:
 16. **Team-shared notes** if/when policy flips on

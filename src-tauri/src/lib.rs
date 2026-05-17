@@ -95,6 +95,129 @@ pub fn is_supported_image(path: &Path) -> bool {
     )
 }
 
+/// Default cap for `local_read_text_file`. Matches the Dropbox-side
+/// `DEFAULT_TEXT_FILE_MAX_BYTES` so a pipeline config that round-trips
+/// between local and Dropbox surfaces a consistent size limit.
+const LOCAL_TEXT_FILE_MAX_BYTES: u64 = 256 * 1024;
+
+/// Read a small text file (e.g. a `.dropbox-interface.json`) from local
+/// disk. Returns `Some(contents)` on success, `None` when the file does
+/// not exist, or an `Err` for any other failure. Bounded by `max_bytes`
+/// (defaults to 256KB) so a hand-edited config file can't flood the
+/// renderer.
+#[tauri::command]
+fn local_read_text_file(path: String, max_bytes: Option<u64>) -> Result<Option<String>, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Path is empty".into());
+    }
+    let cap = max_bytes.unwrap_or(LOCAL_TEXT_FILE_MAX_BYTES);
+    let p = PathBuf::from(trimmed);
+
+    let meta = match std::fs::metadata(&p) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    if meta.is_dir() {
+        return Err(format!("Not a file: {trimmed}"));
+    }
+    if meta.len() > cap {
+        return Err(format!("file at {trimmed} exceeds {cap}-byte cap"));
+    }
+    let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
+    let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+    Ok(Some(text))
+}
+
+/// Move (or rename) a local file/folder. Used by pipeline Promote on
+/// local-FS pipelines. The destination's parent must already exist.
+#[tauri::command]
+fn local_move(from_path: String, to_path: String) -> Result<FsEntry, String> {
+    let from = from_path.trim();
+    let to = to_path.trim();
+    if from.is_empty() || to.is_empty() {
+        return Err("Path is empty".into());
+    }
+    let from_p = PathBuf::from(from);
+    let to_p = PathBuf::from(to);
+
+    if !from_p.exists() {
+        return Err(format!("Source does not exist: {from}"));
+    }
+    // Same-path no-op needs to be caught BEFORE the "destination exists"
+    // check below — otherwise it would trip that and report a misleading
+    // error.
+    if from_p == to_p {
+        return Err("Source and destination are the same".into());
+    }
+    if to_p.exists() {
+        return Err(format!("Destination already exists: {to}"));
+    }
+    let to_parent = to_p
+        .parent()
+        .ok_or_else(|| format!("Destination has no parent: {to}"))?;
+    if !to_parent.exists() {
+        return Err(format!(
+            "Destination parent does not exist: {}",
+            to_parent.to_string_lossy()
+        ));
+    }
+
+    std::fs::rename(&from_p, &to_p).map_err(|e| e.to_string())?;
+    entry_for_path(&to_p)
+}
+
+/// Create a new directory at `path`. The parent must already exist;
+/// fails if the path is already present (file or dir).
+#[tauri::command]
+fn local_create_folder(path: String) -> Result<FsEntry, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Path is empty".into());
+    }
+    let p = PathBuf::from(trimmed);
+    if p.exists() {
+        return Err(format!("Path already exists: {trimmed}"));
+    }
+    let parent = p
+        .parent()
+        .ok_or_else(|| format!("Path has no parent: {trimmed}"))?;
+    if !parent.exists() {
+        return Err(format!(
+            "Parent does not exist: {}",
+            parent.to_string_lossy()
+        ));
+    }
+    std::fs::create_dir(&p).map_err(|e| e.to_string())?;
+    entry_for_path(&p)
+}
+
+/// Build an `FsEntry` describing an existing path. Used as the return
+/// value for `local_move` / `local_create_folder` so callers can
+/// optimistically update their listings without re-listing the parent.
+fn entry_for_path(p: &Path) -> Result<FsEntry, String> {
+    let meta = std::fs::metadata(p).map_err(|e| e.to_string())?;
+    let is_directory = meta.is_dir();
+    let size = if is_directory { None } else { Some(meta.len()) };
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    let name = p
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(FsEntry {
+        name,
+        path: p.to_string_lossy().into_owned(),
+        is_directory,
+        size,
+        modified,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -106,6 +229,9 @@ pub fn run() {
             default_local_root,
             parent_directory,
             list_directory,
+            local_read_text_file,
+            local_move,
+            local_create_folder,
             terminal::terminal_spawn,
             terminal::terminal_write,
             terminal::terminal_resize,
@@ -278,5 +404,208 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(entries[0].is_directory);
         assert_eq!(entries[0].size, None);
+    }
+
+    // -------- local_read_text_file ----------------------------------
+
+    #[test]
+    fn local_read_text_file_returns_contents() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("cfg.json");
+        fs::write(&p, b"{\"hi\":1}").unwrap();
+        let got =
+            local_read_text_file(p.to_string_lossy().into_owned(), None).unwrap();
+        assert_eq!(got.as_deref(), Some("{\"hi\":1}"));
+    }
+
+    #[test]
+    fn local_read_text_file_missing_returns_none() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("nope.json");
+        let got =
+            local_read_text_file(p.to_string_lossy().into_owned(), None).unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn local_read_text_file_rejects_empty_path() {
+        let err = local_read_text_file("".into(), None).unwrap_err();
+        assert_eq!(err, "Path is empty");
+    }
+
+    #[test]
+    fn local_read_text_file_rejects_directory() {
+        let dir = tempdir().unwrap();
+        let err = local_read_text_file(dir.path().to_string_lossy().into_owned(), None)
+            .unwrap_err();
+        assert!(err.starts_with("Not a file"), "got: {err}");
+    }
+
+    #[test]
+    fn local_read_text_file_enforces_byte_cap() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("big.json");
+        // 100 bytes; cap at 50.
+        fs::write(&p, vec![b'a'; 100]).unwrap();
+        let err = local_read_text_file(p.to_string_lossy().into_owned(), Some(50))
+            .unwrap_err();
+        assert!(err.contains("exceeds"), "got: {err}");
+    }
+
+    #[test]
+    fn local_read_text_file_rejects_non_utf8() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("binary.bin");
+        // Invalid UTF-8 byte sequence.
+        fs::write(&p, [0xff_u8, 0xfe, 0xfd]).unwrap();
+        let err =
+            local_read_text_file(p.to_string_lossy().into_owned(), None).unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    // -------- local_move ---------------------------------------------
+
+    #[test]
+    fn local_move_renames_a_file_and_returns_entry() {
+        let dir = tempdir().unwrap();
+        let from = dir.path().join("a.txt");
+        let to = dir.path().join("sub").join("a.txt");
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(&from, b"hello").unwrap();
+
+        let entry = local_move(
+            from.to_string_lossy().into_owned(),
+            to.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        assert_eq!(entry.name, "a.txt");
+        assert!(!entry.is_directory);
+        assert_eq!(entry.size, Some(5));
+        assert!(!from.exists());
+        assert!(to.exists());
+    }
+
+    #[test]
+    fn local_move_moves_a_directory() {
+        let dir = tempdir().unwrap();
+        let from = dir.path().join("source");
+        let to = dir.path().join("dest");
+        fs::create_dir(&from).unwrap();
+        fs::write(from.join("inside.txt"), b"x").unwrap();
+
+        let entry = local_move(
+            from.to_string_lossy().into_owned(),
+            to.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        assert!(entry.is_directory);
+        assert!(to.join("inside.txt").exists());
+    }
+
+    #[test]
+    fn local_move_rejects_empty_paths() {
+        assert_eq!(
+            local_move("".into(), "/x".into()).unwrap_err(),
+            "Path is empty",
+        );
+        assert_eq!(
+            local_move("/x".into(), "".into()).unwrap_err(),
+            "Path is empty",
+        );
+    }
+
+    #[test]
+    fn local_move_rejects_missing_source() {
+        let dir = tempdir().unwrap();
+        let from = dir.path().join("nope");
+        let to = dir.path().join("dest");
+        let err = local_move(
+            from.to_string_lossy().into_owned(),
+            to.to_string_lossy().into_owned(),
+        )
+        .unwrap_err();
+        assert!(err.contains("Source does not exist"), "got: {err}");
+    }
+
+    #[test]
+    fn local_move_rejects_existing_destination() {
+        let dir = tempdir().unwrap();
+        let from = dir.path().join("a.txt");
+        let to = dir.path().join("b.txt");
+        fs::write(&from, b"a").unwrap();
+        fs::write(&to, b"b").unwrap();
+        let err = local_move(
+            from.to_string_lossy().into_owned(),
+            to.to_string_lossy().into_owned(),
+        )
+        .unwrap_err();
+        assert!(err.contains("already exists"), "got: {err}");
+        // Original file untouched.
+        assert_eq!(fs::read(&from).unwrap(), b"a");
+    }
+
+    #[test]
+    fn local_move_rejects_same_path() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("a.txt");
+        fs::write(&p, b"a").unwrap();
+        let err = local_move(
+            p.to_string_lossy().into_owned(),
+            p.to_string_lossy().into_owned(),
+        )
+        .unwrap_err();
+        assert!(err.contains("same"), "got: {err}");
+    }
+
+    #[test]
+    fn local_move_rejects_missing_destination_parent() {
+        let dir = tempdir().unwrap();
+        let from = dir.path().join("a.txt");
+        let to = dir.path().join("nonexistent-parent").join("a.txt");
+        fs::write(&from, b"a").unwrap();
+        let err = local_move(
+            from.to_string_lossy().into_owned(),
+            to.to_string_lossy().into_owned(),
+        )
+        .unwrap_err();
+        assert!(err.contains("parent does not exist"), "got: {err}");
+        // Source untouched.
+        assert!(from.exists());
+    }
+
+    // -------- local_create_folder ------------------------------------
+
+    #[test]
+    fn local_create_folder_creates_a_directory_and_returns_entry() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("1__Processing");
+        let entry = local_create_folder(target.to_string_lossy().into_owned()).unwrap();
+        assert!(target.exists());
+        assert!(entry.is_directory);
+        assert_eq!(entry.name, "1__Processing");
+        assert_eq!(entry.size, None);
+    }
+
+    #[test]
+    fn local_create_folder_rejects_empty_path() {
+        let err = local_create_folder("".into()).unwrap_err();
+        assert_eq!(err, "Path is empty");
+    }
+
+    #[test]
+    fn local_create_folder_rejects_existing_path() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("already");
+        fs::create_dir(&target).unwrap();
+        let err = local_create_folder(target.to_string_lossy().into_owned()).unwrap_err();
+        assert!(err.contains("already exists"), "got: {err}");
+    }
+
+    #[test]
+    fn local_create_folder_rejects_missing_parent() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("nope").join("child");
+        let err = local_create_folder(target.to_string_lossy().into_owned()).unwrap_err();
+        assert!(err.contains("Parent does not exist"), "got: {err}");
     }
 }
