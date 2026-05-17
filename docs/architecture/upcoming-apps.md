@@ -105,6 +105,57 @@ under the existing D-L1/D-L2 caps.
 
 ## B. Job Tracker
 
+**Status: v1 SHIPPED** in `claude/job-tracker-v1` (PR forthcoming).
+Implementation matches the sketch below with the following final
+choices; v2 work continues from here.
+
+### What v1 actually shipped
+
+- `src/lib/job-tracker-config.ts`: persistence + path helpers
+  (`jobsCsvPathFor`, `jobFilesDirFor`, `jobThreadPathFor`). One
+  storage key: `dropbox-interface:job-tracker:v1`.
+- `src/lib/job-tracker-recents.ts`: dashboard "Recent Job Trackers"
+  list. Mirrors `crm-recents` shape exactly.
+- `src/lib/job-status.ts`: `pickStatusColumn` (case-insensitive
+  match on `status`); `deriveStatusValues` (first-seen order; appends
+  the synthetic `Backlog` bucket only when at least one row has an
+  empty status); `statusOf`. Falls back to a single `Backlog`
+  bucket when no status column exists.
+- `src/lib/job-thread.ts`: JSONL parser. Returns `{ entries, skipped }`
+  so malformed lines surface as a banner instead of silently
+  dropping. Reuses `parseCsv`-style "best effort" semantics.
+- `src/components/job-tracker-app.tsx`: setup card → loading →
+  ready board / parse-error / error states. Board renders one
+  column per derived status value; cards show the row's key column
+  as their primary text and the first 2 non-key field values as a
+  subtitle. Detail panel mirrors the CRM panel — Edit, attachments,
+  and a read-only thread reader. Status column in the editor
+  renders as a `<select>` so changes always land in a real column.
+- `src/components/recents-card.tsx`: extracted during this round.
+  The three near-identical recents-card blocks in `App.tsx` (the
+  Pipelines / CRMs / Job Trackers cards) all use it now.
+
+### Deferred to v2 (in priority order)
+
+1. **Thread writes.** `local_write_text_file` is overwrite-only;
+   true multi-writer append needs either a new `local_append_text_file`
+   command (preferred — append O_APPEND is atomic on POSIX for
+   small writes) or pessimistic read-modify-write with a generation
+   counter.
+2. **Add / delete rows.** CRM pattern lifts verbatim; main
+   reason to defer was scope.
+3. **Drag-between-columns** for fast status changes (board kanban).
+   The pipeline-view drag-drop pattern can be lifted with minor
+   adaptation.
+4. **CRM linkage via `client_id`.** Add an `initialRowKey` deep-link
+   to `CrmApp` so a job's "Client" row can launch the CRM at the
+   right contact.
+5. **Declared status order.** When a sidecar `.job-tracker.json`
+   declares an ordered status list, derive columns from it instead
+   of from observed rows — lets the user pre-create empty columns.
+
+### Original sketch (preserved for reference)
+
 **Problem statement.** Track jobs from inquiry → close. Each job has a
 status (Inquiry / Booked / Shooting / Editing / Delivered / Closed,
 configurable), a primary client (links to CRM), and sidecar files +

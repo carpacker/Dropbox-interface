@@ -19,6 +19,7 @@
 import { crmAppDescriptor } from "@/components/crm-app";
 import { desktopWorkspaceAppDescriptor } from "@/components/desktop-workspace-app";
 import { dropboxAppDescriptor } from "@/components/dropbox-app";
+import { jobTrackerAppDescriptor } from "@/components/job-tracker-app";
 import { photosAppDescriptor } from "@/components/photos-app";
 
 import type { AppDescriptor } from "./types";
@@ -50,6 +51,7 @@ export const APPS: ReadonlyArray<AppDescriptor> = assertUniqueIds([
   photosAppDescriptor,
   dropboxAppDescriptor,
   crmAppDescriptor,
+  jobTrackerAppDescriptor,
 ]);
 
 /** Find a registered app by id, or undefined when not present. */

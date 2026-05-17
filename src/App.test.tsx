@@ -36,6 +36,9 @@ describe("App", () => {
     expect(
       screen.getByRole("button", { name: /open crm/i }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /open job tracker/i }),
+    ).toBeInTheDocument();
   });
 
   it("navigates into the workspace app and back", async () => {
@@ -249,6 +252,64 @@ describe("App — Recent CRMs card", () => {
 
     // CRM table renders the row from the CSV.
     expect(await screen.findByText("X")).toBeInTheDocument();
+  });
+});
+
+describe("App — Recent Job Trackers card", () => {
+  beforeEach(() => {
+    localStorage.removeItem("dropbox-interface:job-tracker:recents:v1");
+  });
+  afterEach(() => {
+    localStorage.removeItem("dropbox-interface:job-tracker:recents:v1");
+  });
+
+  it("does not render the card when no recents are stored", () => {
+    render(<App />);
+    expect(
+      screen.queryByLabelText(/recent job trackers/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders one row per stored Job Tracker, MRU first", async () => {
+    localStorage.setItem(
+      "dropbox-interface:job-tracker:recents:v1",
+      JSON.stringify([
+        { path: "/old/jt", name: "OldJT", visitedAt: 1000 },
+        { path: "/new/jt", name: "NewJT", visitedAt: 2000 },
+      ]),
+    );
+    render(<App />);
+    const list = await screen.findByLabelText(/recent job trackers/i);
+    const items = within(list).getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("NewJT");
+    expect(items[1]).toHaveTextContent("OldJT");
+  });
+
+  it("clicking a recent Job Tracker enters the app at that path", async () => {
+    localStorage.setItem(
+      "dropbox-interface:job-tracker:recents:v1",
+      JSON.stringify([
+        { path: "/r", name: "R", visitedAt: 1000 },
+      ]),
+    );
+    // Job Tracker reads <root>/jobs.csv on launch.
+    setInvokeHandler("local_read_text_file", (args) => {
+      const path = (args as { path: string }).path;
+      if (path.endsWith("jobs.csv")) return "id,status\nfoo,Booked\n";
+      return null;
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+    const list = await screen.findByLabelText(/recent job trackers/i);
+    const [row] = within(list).getAllByRole("listitem");
+    await user.click(within(row).getByRole("button", { name: /^R/ }));
+
+    // The Job Tracker board renders the row's column.
+    expect(
+      await screen.findByLabelText(/status: booked/i),
+    ).toBeInTheDocument();
   });
 });
 

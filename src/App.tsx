@@ -1,13 +1,11 @@
 import {
   ArrowLeft,
-  History,
-  Pin,
-  PinOff,
   Settings as SettingsIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ErrorBoundary } from "@/components/error-boundary";
+import { RecentsCard } from "@/components/recents-card";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,6 +23,11 @@ import {
   type RecentCrm,
 } from "@/lib/crm-recents";
 import {
+  getRecentJobTrackers,
+  setJobTrackerPinned,
+  type RecentJobTracker,
+} from "@/lib/job-tracker-recents";
+import {
   getRecentPipelines,
   setPinned,
   type RecentPipeline,
@@ -36,7 +39,6 @@ import {
   type DashboardLayout,
 } from "@/lib/settings";
 import { formatRelativeTime } from "@/lib/time-format";
-import { cn } from "@/lib/utils";
 
 /**
  * Dashboard layout presets. The grid that hosts the app cards swaps
@@ -60,6 +62,7 @@ function App() {
   const [deepLink, setDeepLink] = useState<AppDeepLink | undefined>(undefined);
   const [recents, setRecents] = useState<RecentPipeline[]>([]);
   const [crmRecents, setCrmRecents] = useState<RecentCrm[]>([]);
+  const [jobRecents, setJobRecents] = useState<RecentJobTracker[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [dashboardLayout, setDashboardLayout] = useState<DashboardLayout>(
     () => loadSettings().dashboardLayout,
@@ -88,6 +91,7 @@ function App() {
     if (onDashboard) {
       setRecents(getRecentPipelines());
       setCrmRecents(getRecentCrms());
+      setJobRecents(getRecentJobTrackers());
     }
   }, [onDashboard]);
 
@@ -183,147 +187,64 @@ function App() {
             })}
           </div>
 
-          {recents.length > 0 ? (
-            <Card className="flex flex-col">
-              <CardHeader className="flex flex-col gap-2 pb-3">
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <History />
-                  Recent pipelines
-                </CardTitle>
-                <CardDescription>
-                  Folders where a <code>.dropbox-interface.json</code> opened
-                  last. Click to jump back in.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ul
-                  aria-label="Recent pipelines"
-                  className="flex flex-col gap-2"
-                >
-                  {recents.map((r) => (
-                    <li
-                      key={r.path}
-                      className={cn(
-                        "flex items-stretch gap-1 rounded-lg border bg-background transition hover:border-foreground/40",
-                        r.pinned && "border-foreground/30",
-                      )}
-                    >
-                      <button
-                        type="button"
-                        // Recent pipelines today only target Dropbox.
-                        // When a second backend (local) wants its own
-                        // recents, the descriptor can declare which
-                        // app to deep-link into.
-                        onClick={() => launch("dropbox", r.path)}
-                        className="flex min-w-0 flex-1 items-center justify-between gap-3 px-3 py-2 text-left"
-                      >
-                        <span className="flex min-w-0 flex-col">
-                          <span className="truncate text-sm font-medium">
-                            {r.name}
-                          </span>
-                          <span className="truncate font-mono text-xs text-muted-foreground">
-                            {r.path === "" ? "/ (root)" : r.path}
-                          </span>
-                        </span>
-                        <span className="shrink-0 text-xs text-muted-foreground">
-                          {formatRelativeTime(r.visitedAt, Date.now())}
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPinned(r.path, !r.pinned);
-                          setRecents(getRecentPipelines());
-                        }}
-                        aria-label={
-                          r.pinned ? `Unpin ${r.name}` : `Pin ${r.name}`
-                        }
-                        aria-pressed={r.pinned ? "true" : "false"}
-                        className={cn(
-                          "flex shrink-0 items-center justify-center px-3 transition hover:bg-muted",
-                          r.pinned && "text-foreground",
-                          !r.pinned && "text-muted-foreground",
-                        )}
-                      >
-                        {r.pinned ? <Pin /> : <PinOff />}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </CardContent>
-            </Card>
-          ) : null}
+          <RecentsCard<RecentPipeline>
+            title="Recent pipelines"
+            description={
+              <>
+                Folders where a <code>.dropbox-interface.json</code>{" "}
+                opened last. Click to jump back in.
+              </>
+            }
+            ariaListLabel="Recent pipelines"
+            entries={recents}
+            idFor={(r) => r.path}
+            nameFor={(r) => r.name}
+            pathFor={(r) => (r.path === "" ? "/ (root)" : r.path)}
+            visitedAtFor={(r) => r.visitedAt}
+            pinnedFor={(r) => Boolean(r.pinned)}
+            onLaunch={(r) => launch("dropbox", r.path)}
+            onTogglePin={(r) => {
+              setPinned(r.path, !r.pinned);
+              setRecents(getRecentPipelines());
+            }}
+            formatRelativeTime={formatRelativeTime}
+          />
 
-          {crmRecents.length > 0 ? (
-            <Card className="flex flex-col">
-              <CardHeader className="flex flex-col gap-2 pb-3">
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <History />
-                  Recent CRMs
-                </CardTitle>
-                <CardDescription>
-                  Folders you've opened in the CRM app. Click to jump
-                  back in.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ul aria-label="Recent CRMs" className="flex flex-col gap-2">
-                  {crmRecents.map((r) => (
-                    <li
-                      key={r.path}
-                      className={cn(
-                        "flex items-stretch gap-1 rounded-lg border bg-background transition hover:border-foreground/40",
-                        r.pinned && "border-foreground/30",
-                      )}
-                    >
-                      <button
-                        type="button"
-                        // CRM doesn't read ctx.deepLink today; it
-                        // loads from saved config on mount. To deep-
-                        // link a specific recent we'd need to teach
-                        // CrmApp to accept a deep-link payload — for
-                        // now, click just enters the CRM and the
-                        // app loads the last-used root (which is the
-                        // same one we just refreshed in storage).
-                        onClick={() => launch("crm", r.path)}
-                        className="flex min-w-0 flex-1 items-center justify-between gap-3 px-3 py-2 text-left"
-                      >
-                        <span className="flex min-w-0 flex-col">
-                          <span className="truncate text-sm font-medium">
-                            {r.name}
-                          </span>
-                          <span className="truncate font-mono text-xs text-muted-foreground">
-                            {r.path}
-                          </span>
-                        </span>
-                        <span className="shrink-0 text-xs text-muted-foreground">
-                          {formatRelativeTime(r.visitedAt, Date.now())}
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCrmPinned(r.path, !r.pinned);
-                          setCrmRecents(getRecentCrms());
-                        }}
-                        aria-label={
-                          r.pinned ? `Unpin ${r.name}` : `Pin ${r.name}`
-                        }
-                        aria-pressed={r.pinned ? "true" : "false"}
-                        className={cn(
-                          "flex shrink-0 items-center justify-center px-3 transition hover:bg-muted",
-                          r.pinned && "text-foreground",
-                          !r.pinned && "text-muted-foreground",
-                        )}
-                      >
-                        {r.pinned ? <Pin /> : <PinOff />}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </CardContent>
-            </Card>
-          ) : null}
+          <RecentsCard<RecentCrm>
+            title="Recent CRMs"
+            description="Folders you've opened in the CRM app. Click to jump back in."
+            ariaListLabel="Recent CRMs"
+            entries={crmRecents}
+            idFor={(r) => r.path}
+            nameFor={(r) => r.name}
+            pathFor={(r) => r.path}
+            visitedAtFor={(r) => r.visitedAt}
+            pinnedFor={(r) => Boolean(r.pinned)}
+            onLaunch={(r) => launch("crm", r.path)}
+            onTogglePin={(r) => {
+              setCrmPinned(r.path, !r.pinned);
+              setCrmRecents(getRecentCrms());
+            }}
+            formatRelativeTime={formatRelativeTime}
+          />
+
+          <RecentsCard<RecentJobTracker>
+            title="Recent Job Trackers"
+            description="Folders you've opened in the Job Tracker app. Click to jump back in."
+            ariaListLabel="Recent Job Trackers"
+            entries={jobRecents}
+            idFor={(r) => r.path}
+            nameFor={(r) => r.name}
+            pathFor={(r) => r.path}
+            visitedAtFor={(r) => r.visitedAt}
+            pinnedFor={(r) => Boolean(r.pinned)}
+            onLaunch={(r) => launch("job-tracker", r.path)}
+            onTogglePin={(r) => {
+              setJobTrackerPinned(r.path, !r.pinned);
+              setJobRecents(getRecentJobTrackers());
+            }}
+            formatRelativeTime={formatRelativeTime}
+          />
         </div>
       ) : activeApp ? (
         <ErrorBoundary label={activeApp.title}>
