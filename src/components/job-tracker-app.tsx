@@ -38,11 +38,14 @@ import {
   MessageSquare,
   Paperclip,
   Pencil,
+  Plus,
   RefreshCw,
+  Trash2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { FilterChip } from "@/components/filter-chip";
 import { Button } from "@/components/ui/button";
 import {
@@ -365,10 +368,70 @@ function JobTrackerBoard({
   onPickDifferent,
   persistRows,
 }: JobTrackerBoardProps) {
-  const [editing, setEditing] = useState<{ key: string; original: CsvRow } | null>(
-    null,
-  );
+  // Modal mode for the row editor. `edit` carries the original
+  // row so save can replace it in place; `add` carries nothing —
+  // the editor starts blank and the new row gets appended.
+  type EditorMode =
+    | { kind: "edit"; key: string; original: CsvRow }
+    | { kind: "add" };
+  const [editing, setEditing] = useState<EditorMode | null>(null);
+  const [deletePending, setDeletePending] = useState<{
+    key: string;
+    row: CsvRow;
+  } | null>(null);
   const [writeInFlight, setWriteInFlight] = useState(false);
+  // Drag-drop state. `draggingKey` is the source card; `dragHoverStatus`
+  // is the target column under the pointer (so we can highlight it).
+  const [draggingKey, setDraggingKey] = useState<string | null>(null);
+  const [dragHoverStatus, setDragHoverStatus] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
+
+  /**
+   * Re-bucket a card to `targetStatus` by mutating its status column
+   * and rewriting the CSV. Reachable from a column drop. No-ops when:
+   *   - the row's status is already `targetStatus` (avoid a needless
+   *     write + churn)
+   *   - the row no longer exists (stale drag id)
+   *   - the CSV has no status column (board is a single bucket; nowhere
+   *     for the card to go)
+   *
+   * Failures surface as a `moveError` banner above the board; the
+   * underlying `persistRows` will also push the app into the
+   * top-level error state if the write itself fails. The two error
+   * surfaces are intentional: the banner handles "the move was a no-op
+   * but worth telling the user", the top-level handles "the write
+   * itself blew up".
+   */
+  async function handleDropOnStatus(rowKey: string, targetStatus: string) {
+    if (!statusColumn) {
+      setMoveError(
+        "Can't move: this CSV has no status column. Add one to enable the board.",
+      );
+      return;
+    }
+    if (!keyColumn) return;
+    const row = rows.find((r) => rowKeyFor(r, keyColumn) === rowKey);
+    if (!row) {
+      setMoveError(`Row ${JSON.stringify(rowKey)} is no longer present.`);
+      return;
+    }
+    const currentStatus = statusOf(row, statusColumn);
+    if (currentStatus === targetStatus) return;
+    // The synthetic Backlog bucket maps to an empty cell on disk —
+    // dragging into Backlog clears the status field rather than
+    // writing the literal "Backlog" string.
+    const nextStatusValue =
+      targetStatus === FALLBACK_STATUS ? "" : targetStatus;
+    const nextRow: CsvRow = { ...row, [statusColumn]: nextStatusValue };
+    setMoveError(null);
+    setWriteInFlight(true);
+    try {
+      const nextRows = rows.map((r) => (r === row ? nextRow : r));
+      await persistRows(nextRows);
+    } finally {
+      setWriteInFlight(false);
+    }
+  }
 
   // Snapshot per-row key once so card key + sidebar lookups agree.
   const keyedRows = useMemo(() => {
@@ -442,6 +505,15 @@ function JobTrackerBoard({
         <div className="flex shrink-0 gap-2">
           <Button
             type="button"
+            size="sm"
+            onClick={() => setEditing({ kind: "add" })}
+            aria-label="Add a new job"
+          >
+            <Plus data-icon="inline-start" />
+            Add job
+          </Button>
+          <Button
+            type="button"
             variant="outline"
             size="sm"
             onClick={onReload}
@@ -491,6 +563,15 @@ function JobTrackerBoard({
           />
         </div>
 
+        {moveError ? (
+          <p
+            role="alert"
+            className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          >
+            {moveError}
+          </p>
+        ) : null}
+
         <Separator />
 
         <div className="flex gap-3">
@@ -514,6 +595,33 @@ function JobTrackerBoard({
                     onSelect(selectedKey === key ? null : key)
                   }
                   keyColumn={keyColumn}
+                  draggingKey={draggingKey}
+                  dragHover={dragHoverStatus === s}
+                  onDragStartCard={(key) => setDraggingKey(key)}
+                  onDragEndCard={() => {
+                    setDraggingKey(null);
+                    setDragHoverStatus(null);
+                  }}
+                  onDragEnterColumn={() => {
+                    if (draggingKey) setDragHoverStatus(s);
+                  }}
+                  onDragLeaveColumn={() =>
+                    setDragHoverStatus((prev) => (prev === s ? null : prev))
+                  }
+                  onDropCard={(e) => {
+                    e.preventDefault();
+                    setDragHoverStatus(null);
+                    const raw = e.dataTransfer.getData(JOB_DRAG_MIME);
+                    if (!raw) return;
+                    let payload: unknown;
+                    try {
+                      payload = JSON.parse(raw);
+                    } catch {
+                      return;
+                    }
+                    if (!isJobDragPayload(payload)) return;
+                    void handleDropOnStatus(payload.rowKey, s);
+                  }}
                 />
               ))}
             </div>
@@ -527,7 +635,14 @@ function JobTrackerBoard({
               headers={headers}
               onClose={() => onSelect(null)}
               onEdit={() =>
-                setEditing({ key: selected.key, original: selected.row })
+                setEditing({
+                  kind: "edit",
+                  key: selected.key,
+                  original: selected.row,
+                })
+              }
+              onDelete={() =>
+                setDeletePending({ key: selected.key, row: selected.row })
               }
             />
           ) : null}
@@ -539,23 +654,34 @@ function JobTrackerBoard({
             keyColumn={keyColumn}
             statusColumn={statusColumn}
             statusValues={statusValues}
-            original={editing.original}
+            mode={editing}
             inFlight={writeInFlight}
             onCancel={() => setEditing(null)}
             onSave={async (nextRow) => {
               setWriteInFlight(true);
               try {
-                const nextRows = rows.map((r) =>
-                  r === editing.original ? nextRow : r,
-                );
+                let nextRows: CsvRow[];
+                if (editing.kind === "add") {
+                  nextRows = [...rows, nextRow];
+                } else {
+                  nextRows = rows.map((r) =>
+                    r === editing.original ? nextRow : r,
+                  );
+                }
                 const ok = await persistRows(nextRows);
                 if (!ok) {
                   setEditing(null);
                   return;
                 }
-                // If the row-key column changed, refocus the new key
-                // so the panel keeps tracking.
-                if (
+                // After add: focus the newly-added row so the user
+                // sees it in the panel right away. After edit: if
+                // the row-key column changed, refocus the new key.
+                if (editing.kind === "add") {
+                  if (keyColumn) {
+                    const newKey = rowKeyFor(nextRow, keyColumn);
+                    if (newKey) onSelect(newKey);
+                  }
+                } else if (
                   keyColumn &&
                   editing.original[keyColumn] !== nextRow[keyColumn]
                 ) {
@@ -569,10 +695,53 @@ function JobTrackerBoard({
             }}
           />
         ) : null}
+
+        <ConfirmDialog
+          open={deletePending !== null}
+          title="Delete this job?"
+          body={
+            deletePending ? (
+              <>
+                <p>
+                  Remove the job keyed by{" "}
+                  <strong>{deletePending.key}</strong> from{" "}
+                  <code>jobs.csv</code>?
+                </p>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  The job's attachments folder and thread file are left
+                  in place — clean them up by hand if you want.
+                </p>
+              </>
+            ) : null
+          }
+          confirmLabel="Delete"
+          destructive
+          busy={writeInFlight}
+          onConfirm={async () => {
+            if (!deletePending) return;
+            setWriteInFlight(true);
+            try {
+              const nextRows = rows.filter(
+                (r) => r !== deletePending.row,
+              );
+              const ok = await persistRows(nextRows);
+              setDeletePending(null);
+              if (ok && selectedKey === deletePending.key) {
+                onSelect(null);
+              }
+            } finally {
+              setWriteInFlight(false);
+            }
+          }}
+          onCancel={() => setDeletePending(null)}
+        />
       </CardContent>
     </Card>
   );
 }
+
+/** Internal MIME type for board card drag payloads. */
+const JOB_DRAG_MIME = "application/x-job-tracker-card";
 
 function BoardColumn({
   status,
@@ -580,18 +749,46 @@ function BoardColumn({
   selectedKey,
   onSelect,
   keyColumn,
+  draggingKey,
+  dragHover,
+  onDragStartCard,
+  onDragEndCard,
+  onDragEnterColumn,
+  onDragLeaveColumn,
+  onDropCard,
 }: {
   status: string;
   cards: Array<{ key: string; row: CsvRow }>;
   selectedKey: string | null;
   onSelect: (key: string) => void;
   keyColumn: string | null;
+  /** Path of the card currently being dragged (so we can dim it). */
+  draggingKey: string | null;
+  /** True when this column is the hover target. */
+  dragHover: boolean;
+  onDragStartCard: (key: string) => void;
+  onDragEndCard: () => void;
+  onDragEnterColumn: () => void;
+  onDragLeaveColumn: () => void;
+  /** Caller decides what target status to bucket the dropped card into. */
+  onDropCard: (e: React.DragEvent<HTMLElement>) => void;
 }) {
   return (
     <section
       role="listitem"
       aria-label={`Status: ${status}`}
-      className="flex w-72 shrink-0 flex-col gap-2 rounded-lg border bg-muted/30 p-2"
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+      }}
+      onDragEnter={onDragEnterColumn}
+      onDragLeave={onDragLeaveColumn}
+      onDrop={onDropCard}
+      data-drop-hover={dragHover ? "true" : undefined}
+      className={cn(
+        "flex w-72 shrink-0 flex-col gap-2 rounded-lg border bg-muted/30 p-2 transition",
+        dragHover && "ring-2 ring-foreground/60 ring-offset-2",
+      )}
     >
       <header className="flex items-center justify-between gap-2 px-1">
         <h3 className="text-sm font-medium">{status}</h3>
@@ -603,30 +800,60 @@ function BoardColumn({
         <p className="px-1 py-2 text-xs text-muted-foreground">No jobs.</p>
       ) : (
         <ul className="flex flex-col gap-2">
-          {cards.map(({ key, row }) => (
-            <li key={key}>
-              <button
-                type="button"
-                onClick={() => onSelect(key)}
-                aria-pressed={selectedKey === key ? "true" : "false"}
-                className={cn(
-                  "w-full rounded-md border bg-background p-2 text-left transition hover:border-foreground/40",
-                  selectedKey === key && "border-foreground/60 shadow-sm",
-                )}
-              >
-                <p className="line-clamp-2 break-words text-sm font-medium leading-tight">
-                  {keyColumn ? row[keyColumn] : key}
-                </p>
-                {/* Show one or two extra fields beneath the name for
-                   board-level scannability. Picks the first non-key,
-                   non-status columns. */}
-                <CardSubtitle row={row} skip={[keyColumn ?? ""]} />
-              </button>
-            </li>
-          ))}
+          {cards.map(({ key, row }) => {
+            const dragging = draggingKey === key;
+            return (
+              <li key={key}>
+                <button
+                  type="button"
+                  draggable
+                  onDragStart={(e) => {
+                    // Encode the row key in the payload; status target
+                    // comes from the destination column.
+                    e.dataTransfer.setData(
+                      JOB_DRAG_MIME,
+                      JSON.stringify({ rowKey: key }),
+                    );
+                    e.dataTransfer.effectAllowed = "move";
+                    onDragStartCard(key);
+                  }}
+                  onDragEnd={() => onDragEndCard()}
+                  onClick={() => onSelect(key)}
+                  aria-pressed={selectedKey === key ? "true" : "false"}
+                  data-dragging={dragging ? "true" : undefined}
+                  className={cn(
+                    "w-full cursor-grab rounded-md border bg-background p-2 text-left transition hover:border-foreground/40 active:cursor-grabbing",
+                    selectedKey === key && "border-foreground/60 shadow-sm",
+                    dragging && "opacity-40",
+                  )}
+                >
+                  <p className="line-clamp-2 break-words text-sm font-medium leading-tight">
+                    {keyColumn ? row[keyColumn] : key}
+                  </p>
+                  {/* Show one or two extra fields beneath the name for
+                     board-level scannability. Picks the first non-key,
+                     non-status columns. */}
+                  <CardSubtitle row={row} skip={[keyColumn ?? ""]} />
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>
+  );
+}
+
+/**
+ * Validate a drag-payload coming back through `dataTransfer.getData`.
+ * Defensive because the value is opaque JSON — even though we wrote
+ * it ourselves, there's no compile-time guarantee about its shape.
+ */
+function isJobDragPayload(v: unknown): v is { rowKey: string } {
+  return (
+    !!v &&
+    typeof v === "object" &&
+    typeof (v as { rowKey?: unknown }).rowKey === "string"
   );
 }
 
@@ -674,6 +901,7 @@ function JobDetailPanel({
   headers,
   onClose,
   onEdit,
+  onDelete,
 }: {
   rootPath: string;
   rowKey: string;
@@ -681,6 +909,7 @@ function JobDetailPanel({
   headers: string[];
   onClose: () => void;
   onEdit: () => void;
+  onDelete: () => void;
 }) {
   const [files, setFiles] = useState<FilesState>({ kind: "loading" });
   const [thread, setThread] = useState<ThreadState>({ kind: "loading" });
@@ -816,6 +1045,17 @@ function JobDetailPanel({
         >
           <Pencil data-icon="inline-start" />
           Edit
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onDelete}
+          aria-label="Delete job"
+          className="text-destructive hover:bg-destructive/10"
+        >
+          <Trash2 data-icon="inline-start" />
+          Delete
         </Button>
       </div>
 
@@ -1073,7 +1313,7 @@ function JobRowEditor({
   keyColumn,
   statusColumn,
   statusValues,
-  original,
+  mode,
   inFlight,
   onCancel,
   onSave,
@@ -1082,12 +1322,30 @@ function JobRowEditor({
   keyColumn: string | null;
   statusColumn: string | null;
   statusValues: string[];
-  original: CsvRow;
+  /** Editor mode: `edit` carries the original row; `add` starts blank. */
+  mode:
+    | { kind: "edit"; key: string; original: CsvRow }
+    | { kind: "add" };
   inFlight: boolean;
   onCancel: () => void;
   onSave: (row: CsvRow) => void;
 }) {
-  const [values, setValues] = useState<CsvRow>(() => ({ ...original }));
+  const isAdd = mode.kind === "add";
+  const initial = useMemo<CsvRow>(() => {
+    if (mode.kind === "edit") return { ...mode.original };
+    // Add: blank values for every header; pre-fill the status with
+    // the first non-synthetic value so the new card lands in a real
+    // column instead of the Backlog sink.
+    const out: CsvRow = {};
+    for (const h of headers) out[h] = "";
+    if (statusColumn) {
+      const firstReal = statusValues.find((v) => v !== FALLBACK_STATUS);
+      if (firstReal) out[statusColumn] = firstReal;
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, headers, statusColumn]);
+  const [values, setValues] = useState<CsvRow>(initial);
   const [localError, setLocalError] = useState<string | null>(null);
 
   // Status options = derived statuses + the row's current value if
@@ -1101,12 +1359,14 @@ function JobRowEditor({
     // arbitrary CSV. Items can still land there by leaving the
     // field blank, but the picker doesn't volunteer it.
     const cleaned = opts.filter((v) => v !== FALLBACK_STATUS);
-    const current = (original[statusColumn] ?? "").trim();
-    if (current !== "" && !cleaned.includes(current)) {
-      cleaned.unshift(current);
+    if (mode.kind === "edit") {
+      const current = (mode.original[statusColumn] ?? "").trim();
+      if (current !== "" && !cleaned.includes(current)) {
+        cleaned.unshift(current);
+      }
     }
     return cleaned;
-  }, [statusValues, statusColumn, original]);
+  }, [statusValues, statusColumn, mode]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1139,7 +1399,7 @@ function JobRowEditor({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Edit job"
+      aria-label={isAdd ? "Add job" : "Edit job"}
       onClick={onCancel}
       className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur"
     >
@@ -1152,7 +1412,9 @@ function JobRowEditor({
         className="flex w-full max-w-md flex-col gap-3 rounded-lg border bg-card p-4 shadow-2xl"
       >
         <div className="flex items-start justify-between gap-2">
-          <p className="text-sm font-medium">Edit job</p>
+          <p className="text-sm font-medium">
+            {isAdd ? "Add job" : "Edit job"}
+          </p>
           <Button
             type="button"
             variant="ghost"

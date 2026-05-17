@@ -135,24 +135,44 @@ choices; v2 work continues from here.
   The three near-identical recents-card blocks in `App.tsx` (the
   Pipelines / CRMs / Job Trackers cards) all use it now.
 
-### Deferred to v2 (in priority order)
+### What v2 actually shipped (`claude/job-tracker-v2`)
+
+- **Add row.** `Add job` toolbar button → modal pre-fills status
+  with the first real (non-Backlog) status value so the new card
+  lands in a real column. Refuses to save when the key column
+  sanitizes to empty (same rule as CRM Add).
+- **Delete row.** Detail-panel `Delete` button → `<ConfirmDialog>`
+  with destructive styling. Mirrors CRM delete (§D-L3): single
+  row per call, in-flight disable, attachments folder + thread
+  file are deliberately left in place so the action's blast
+  radius matches the user's gesture.
+- **Drag between columns.** Cards are draggable; columns are drop
+  targets. Drop = mutate the status field and `persistRows`.
+  Same-column drops are no-ops. Drop on a board with no status
+  column surfaces a `moveError` banner (non-blocking). Drop on the
+  synthetic "Backlog" bucket writes an empty cell (not the literal
+  "Backlog" string) so the on-disk shape matches an unfilled-status
+  row.
+- **`JobRowEditor` accepts a `mode` discriminator** (`{ kind: "edit"
+  | "add" }`); same modal handles both. Same shape as `CrmRowEditor`.
+
+### Deferred to v3 (in priority order)
 
 1. **Thread writes.** `local_write_text_file` is overwrite-only;
    true multi-writer append needs either a new `local_append_text_file`
    command (preferred — append O_APPEND is atomic on POSIX for
    small writes) or pessimistic read-modify-write with a generation
    counter.
-2. **Add / delete rows.** CRM pattern lifts verbatim; main
-   reason to defer was scope.
-3. **Drag-between-columns** for fast status changes (board kanban).
-   The pipeline-view drag-drop pattern can be lifted with minor
-   adaptation.
-4. **CRM linkage via `client_id`.** Add an `initialRowKey` deep-link
+2. **CRM linkage via `client_id`.** Add an `initialRowKey` deep-link
    to `CrmApp` so a job's "Client" row can launch the CRM at the
    right contact.
-5. **Declared status order.** When a sidecar `.job-tracker.json`
+3. **Declared status order.** When a sidecar `.job-tracker.json`
    declares an ordered status list, derive columns from it instead
    of from observed rows — lets the user pre-create empty columns.
+4. **Undoable status changes.** Drag-into-column is reversible
+   today only by manual drag back. Add a transient toast with an
+   Undo button (8s, mirrors the pipeline Promote toast) so an
+   accidental drop is one click away from reversal.
 
 ### Original sketch (preserved for reference)
 
