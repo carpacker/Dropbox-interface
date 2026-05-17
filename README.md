@@ -36,6 +36,7 @@ For the Rust side: `cd src-tauri && cargo test` and `cargo clippy --all-targets 
 
 ## Apps
 
+- **Dashboard** is registry-driven. Sub-apps (Workspace, Photos, Dropbox, CRM, …) register a single `AppDescriptor` from their own module (`src/lib/apps/registry.ts`); the dashboard cards and active-app render branch iterate over that list. Adding a new sub-app is one file + one import.
 - **Files** tab (Workspace): lists directories via Rust commands (`default_local_root`, `list_directory`, `parent_directory`). Each file row shows size + relative-modified time. The **Sort** dropdown (Name / Modified / Size, asc/desc) is shared with every other listing surface; the choice persists to `localStorage` under `dropbox-interface:sort-preference-v1`. A **Filter** chip narrows the visible list by case-insensitive substring (multi-token: every token must match); filter state is per-listing and clears on every navigation.
   - **Local pipelines.** Drop a `.dropbox-interface.json` into any folder you browse here and the Files tab swaps to the same `PipelineView` the Dropbox tab uses — bucket strip, lazy bucket loads, Promote (via `local_move`), missing-state Create-folder (via `local_create_folder`), Undo, drag-to-bucket, bulk Promote, notes, and keyboard nav. Local pipelines don't surface Save-to-disk or Delete (the file browser is already your disk; destructive verbs land deliberately). Backed by `LocalPipelineSource` + `LocalPipelineOperator`, both behind the same `PipelineSource` / `PipelineOperator` seams the Dropbox tab uses.
 - **Settings** (gear icon in the header): modal with two sections — **Theme** (Light / Dark / System; "System" tracks `prefers-color-scheme` and re-applies on change) and **Dashboard layout** (Stacked / Grid / Compact). Choices persist to `localStorage` under `dropbox-interface:settings-v1` and apply instantly. Theme toggles `.dark` on `<html>`; layout is a Tailwind-class swap on the dashboard grid container.
@@ -48,6 +49,7 @@ For the Rust side: `cd src-tauri && cargo test` and `cargo clippy --all-targets 
   - **Local-only notes**: each row gets a Note button that opens a small editor (textarea + Save/Cancel). Notes are keyed by Dropbox path and stored in `localStorage` only — see [`THREAT_MODEL.md`](THREAT_MODEL.md) §D8d for why we don't round-trip them through Dropbox. An empty save deletes the note.
   - **List vs Gallery view**: each pipeline can flip between a row list (default) and a thumbnail gallery sized for image review. Choice persists per pipeline path under `dropbox-interface:pipeline-view-mode:v1`. Gallery tiles use `w256h256` Dropbox thumbnails and keep all the same affordances (Promote, Save, Note, Delete, multi-select, drag).
   - **Keyboard navigation**: click into the active bucket panel, then `j`/`k` (or arrows) move focus, `g`/`G` jump to top/bottom, `Enter` previews an image / opens a folder, `Space` toggles selection, `p` promotes the focused row (or the multi-selection if any), `Esc` unwinds (filter → selection), `?` opens a cheatsheet. Letter keys typed inside the filter chip stay in the input.
+- **CRM** (data app, local-only, read-only for v1): Pick a folder containing a `contacts.csv`; the table renders sortable + filterable. Each row optionally has an attachments folder at `<root>/files/<rowKey>/*` shown in a detail sidebar (image attachments preview inline via the asset protocol). Row keys derive from `id`, then `name`, then the first column (case-insensitive). CSV parsed in-tree — handles quoted fields, embedded commas/newlines, escaped quotes. Capped at 10MB. Config persists under `dropbox-interface:crm:v1`.
 - **Error boundaries**: `ErrorBoundary` (`src/components/error-boundary.tsx`) wraps each app section and the application root.
 
 ## Tests
@@ -58,6 +60,7 @@ For the Rust side: `cd src-tauri && cargo test` and `cargo clippy --all-targets 
 
 ## Architecture docs
 
+- [`docs/architecture/apps-registry.md`](docs/architecture/apps-registry.md) — sub-application registry. One file + one import to add a new dashboard app.
 - [`docs/architecture/pipelines.md`](docs/architecture/pipelines.md) — state-aware folder pipelines (the `1__Processing` / `2__ready` review workflow). Model layer is in `src/lib/pipeline/` and is backend-agnostic (`PipelineSource` is the seam). UI + Dropbox source land in follow-up rounds.
 - [`THREAT_MODEL.md`](THREAT_MODEL.md) — security decisions and accepted residual risks. Update when a feature touches network, filesystem, IPC, or auth.
 

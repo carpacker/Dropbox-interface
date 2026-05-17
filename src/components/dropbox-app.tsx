@@ -2,6 +2,7 @@ import {
   AlertCircle,
   ArrowRight,
   ChevronUp,
+  Cloud,
   Download,
   File,
   Folder,
@@ -30,6 +31,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { GalleryTile } from "@/components/gallery-tile";
 import { PipelineView } from "@/components/pipeline-view";
 import { SortDropdown } from "@/components/sort-dropdown";
+import type { AppDescriptor } from "@/lib/apps/types";
 import { DropboxPipelineOperator } from "@/lib/dropbox-pipeline-operator";
 import { DropboxPipelineSource } from "@/lib/dropbox-pipeline-source";
 import { addRecentPipeline } from "@/lib/pipeline-recents";
@@ -894,3 +896,25 @@ function PreviewLightbox({
     </div>
   );
 }
+
+/**
+ * Registry descriptor. Accepts a `deepLink` payload that, when a
+ * string, is treated as the initial Dropbox path to navigate to
+ * (used by the dashboard's "Recent pipelines" card). Any other value
+ * starts the app at the Dropbox root.
+ */
+export const dropboxAppDescriptor: AppDescriptor = {
+  id: "dropbox",
+  title: "Dropbox",
+  dashboardCard: {
+    icon: Cloud,
+    description: "Connect your Dropbox account and browse remote folders.",
+    launchLabel: "Open Dropbox",
+    category: "cloud",
+  },
+  render: ({ deepLink }) => (
+    <DropboxApp
+      initialPath={typeof deepLink === "string" ? deepLink : undefined}
+    />
+  ),
+};

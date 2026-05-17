@@ -1,7 +1,9 @@
+import { MonitorCog } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 
 import { FileBrowser } from "@/components/file-browser";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import type { AppDescriptor } from "@/lib/apps/types";
 import { cn } from "@/lib/utils";
 
 const DesktopTerminal = lazy(() =>
@@ -46,3 +48,21 @@ export function DesktopWorkspaceApp() {
     </Tabs>
   );
 }
+
+/**
+ * Registry descriptor — adds this app to the dashboard. The shell
+ * passes an `AppContext` we don't currently use (no deep-links into
+ * the workspace yet).
+ */
+export const desktopWorkspaceAppDescriptor: AppDescriptor = {
+  id: "workspace",
+  title: "Desktop Workspace",
+  dashboardCard: {
+    icon: MonitorCog,
+    description:
+      "Open the desktop shell and browse folders inside a single app.",
+    launchLabel: "Launch workspace app",
+    category: "workspace",
+  },
+  render: () => <DesktopWorkspaceApp />,
+};

@@ -21,11 +21,9 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("starts on the dashboard with all three app cards", () => {
+  it("starts on the dashboard rendering one card per registered app", () => {
     render(<App />);
-    expect(screen.getByText("Desktop Workspace")).toBeInTheDocument();
-    expect(screen.getByText("Photo Viewer")).toBeInTheDocument();
-    expect(screen.getByText("Dropbox")).toBeInTheDocument();
+    // Cards are driven by the registry — one launch button per app.
     expect(
       screen.getByRole("button", { name: /launch workspace app/i }),
     ).toBeInTheDocument();
@@ -34,6 +32,9 @@ describe("App", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /open dropbox/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /open crm/i }),
     ).toBeInTheDocument();
   });
 
