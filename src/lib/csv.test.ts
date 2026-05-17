@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseCsv } from "./csv";
+import { parseCsv, serializeCsv, type CsvRow } from "./csv";
 
 describe("parseCsv — happy path", () => {
   it("parses a minimal header + row", () => {
@@ -114,5 +114,81 @@ describe("parseCsv — single-column edge cases", () => {
     if (!r.ok) return;
     expect(r.headers).toEqual(["name"]);
     expect(r.rows).toEqual([{ name: "ada" }, { name: "grace" }]);
+  });
+});
+
+describe("serializeCsv", () => {
+  it("serializes a simple header + row + trailing newline", () => {
+    expect(
+      serializeCsv(
+        ["id", "name"],
+        [{ id: "ada", name: "Ada Lovelace" }],
+      ),
+    ).toBe("id,name\nada,Ada Lovelace\n");
+  });
+
+  it("escapes fields containing commas", () => {
+    expect(
+      serializeCsv(
+        ["name", "note"],
+        [{ name: "Doe, Jane", note: "hi" }],
+      ),
+    ).toBe('name,note\n"Doe, Jane",hi\n');
+  });
+
+  it("escapes fields containing double-quotes by doubling them", () => {
+    expect(
+      serializeCsv(["q"], [{ q: 'she said "hi"' }]),
+    ).toBe('q\n"she said ""hi"""\n');
+  });
+
+  it("escapes fields containing newlines", () => {
+    expect(
+      serializeCsv(["note"], [{ note: "line one\nline two" }]),
+    ).toBe('note\n"line one\nline two"\n');
+  });
+
+  it("pads missing keys with empty strings (matches parseCsv behavior)", () => {
+    expect(
+      serializeCsv(["a", "b", "c"], [{ a: "1", c: "3" }]),
+    ).toBe("a,b,c\n1,,3\n");
+  });
+
+  it("emits header-only output when rows is empty", () => {
+    expect(serializeCsv(["id", "name"], [])).toBe("id,name\n");
+  });
+});
+
+describe("serializeCsv ↔ parseCsv round-trip", () => {
+  function roundTrip(headers: string[], rows: CsvRow[]) {
+    const out = serializeCsv(headers, rows);
+    const reparsed = parseCsv(out);
+    expect(reparsed.ok).toBe(true);
+    if (!reparsed.ok) return;
+    expect(reparsed.headers).toEqual(headers);
+    expect(reparsed.rows).toEqual(rows);
+  }
+
+  it("survives plain cells", () => {
+    roundTrip(
+      ["id", "name", "email"],
+      [
+        { id: "ada", name: "Ada Lovelace", email: "ada@example.com" },
+        { id: "linus", name: "Linus Torvalds", email: "linus@example.com" },
+      ],
+    );
+  });
+
+  it("survives commas, quotes, and newlines in cells", () => {
+    roundTrip(
+      ["x", "y"],
+      [
+        { x: "Doe, Jane", y: 'she said "hi"\nand left' },
+      ],
+    );
+  });
+
+  it("survives empty cells", () => {
+    roundTrip(["a", "b"], [{ a: "", b: "" }]);
   });
 });

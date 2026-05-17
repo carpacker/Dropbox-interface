@@ -73,3 +73,22 @@ export function moveItem(fromPath: string, toPath: string) {
 export function createFolder(path: string) {
   return invoke<FsEntry>("local_create_folder", { path });
 }
+
+/**
+ * Atomically write a UTF-8 text file. The Rust side writes to
+ * `<dir>/.<basename>.tmp` then renames over the destination, so a
+ * crash mid-write leaves the original intact. Used by the CRM to
+ * persist `contacts.csv` after an add/edit/delete. Capped at 16MB.
+ */
+export function writeTextFile(path: string, contents: string) {
+  return invoke<FsEntry>("local_write_text_file", { path, contents });
+}
+
+/**
+ * Copy a file. Refuses to overwrite an existing destination; source
+ * must be a file (not a directory). Used by the CRM "Attach file"
+ * affordance to drop a user-chosen file into the row's sidecar.
+ */
+export function copyFile(fromPath: string, toPath: string) {
+  return invoke<FsEntry>("local_copy_file", { fromPath, toPath });
+}

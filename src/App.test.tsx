@@ -191,4 +191,65 @@ describe("App — Recent pipelines card", () => {
   });
 });
 
+describe("App — Recent CRMs card", () => {
+  beforeEach(() => {
+    // Wipe both recents tables; the dashboard reads from each.
+    localStorage.removeItem("dropbox-interface:crm:recents:v1");
+  });
+  afterEach(() => {
+    localStorage.removeItem("dropbox-interface:crm:recents:v1");
+  });
+
+  it("does not render the CRM recents card when none are stored", () => {
+    render(<App />);
+    expect(
+      screen.queryByLabelText(/recent crms/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders one row per stored CRM, MRU first, with a pin toggle", async () => {
+    localStorage.setItem(
+      "dropbox-interface:crm:recents:v1",
+      JSON.stringify([
+        { path: "/old/crm", name: "Old", visitedAt: 1000 },
+        { path: "/new/crm", name: "New", visitedAt: 2000 },
+      ]),
+    );
+    render(<App />);
+    const list = await screen.findByLabelText(/recent crms/i);
+    const items = within(list).getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    // MRU first.
+    expect(items[0]).toHaveTextContent("New");
+    expect(items[1]).toHaveTextContent("Old");
+    expect(
+      within(items[0]).getByRole("button", { name: /pin new/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("clicking a recent CRM enters the CRM app", async () => {
+    localStorage.setItem(
+      "dropbox-interface:crm:recents:v1",
+      JSON.stringify([
+        { path: "/r", name: "R", visitedAt: 1000 },
+      ]),
+    );
+    // CRM mount will try to read the CSV at /r/contacts.csv — return
+    // a minimal valid file so the table renders.
+    setInvokeHandler("local_read_text_file", () => "id,name\nx,X\n");
+    setInvokeHandler("list_directory", () => {
+      throw new Error("Not a directory: /r/files/x");
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+    const list = await screen.findByLabelText(/recent crms/i);
+    const [row] = within(list).getAllByRole("listitem");
+    await user.click(within(row).getByRole("button", { name: /^R/ }));
+
+    // CRM table renders the row from the CSV.
+    expect(await screen.findByText("X")).toBeInTheDocument();
+  });
+});
+
 // formatRelativeTime tests live in src/lib/time-format.test.ts now.

@@ -16,6 +16,41 @@
 
 export type CsvRow = Record<string, string>;
 
+/**
+ * Serialize a header row + data rows back to a CSV string. The output
+ * is a strict round-trip of `parseCsv` for fields containing only
+ * printable ASCII without commas/quotes/newlines. Fields requiring
+ * quoting are wrapped in `"…"` with embedded quotes doubled.
+ *
+ * Always terminates the file with a trailing `\n` so subsequent
+ * appends concatenate cleanly. Uses `\n` (LF) — callers that need
+ * `\r\n` can post-process.
+ */
+export function serializeCsv(headers: string[], rows: CsvRow[]): string {
+  const lines: string[] = [];
+  lines.push(headers.map(escapeCell).join(","));
+  for (const row of rows) {
+    const cells = headers.map((h) => escapeCell(row[h] ?? ""));
+    lines.push(cells.join(","));
+  }
+  // Trailing newline: makes the file POSIX-correct and lets a future
+  // editor append rows without a stray run-on line.
+  return lines.join("\n") + "\n";
+}
+
+/** Wrap a cell in quotes when it contains structural characters. */
+function escapeCell(value: string): string {
+  if (
+    value.includes(",") ||
+    value.includes('"') ||
+    value.includes("\n") ||
+    value.includes("\r")
+  ) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
 export type CsvParseError = {
   /** 1-based line where the issue was detected. */
   line: number;
