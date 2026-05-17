@@ -1,6 +1,7 @@
 import {
   ChevronUp,
   Folder,
+  FolderOpen,
   ImageIcon,
   Pause,
   Play,
@@ -10,6 +11,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { FilterChip } from "@/components/filter-chip";
+import type { AppDescriptor } from "@/lib/apps/types";
 import { SortDropdown } from "@/components/sort-dropdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -443,3 +445,16 @@ export function PhotosApp() {
     </Card>
   );
 }
+
+export const photosAppDescriptor: AppDescriptor = {
+  id: "photos",
+  title: "Photos",
+  dashboardCard: {
+    icon: FolderOpen,
+    description:
+      "Browse directories and preview supported image files quickly.",
+    launchLabel: "Open photo app",
+    category: "media",
+  },
+  render: () => <PhotosApp />,
+};

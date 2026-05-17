@@ -1,19 +1,13 @@
 import {
   ArrowLeft,
-  Cloud,
-  FolderOpen,
   History,
-  MonitorCog,
   Pin,
   PinOff,
   Settings as SettingsIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { DesktopWorkspaceApp } from "@/components/desktop-workspace-app";
-import { DropboxApp } from "@/components/dropbox-app";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { PhotosApp } from "@/components/photos-app";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +17,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { APPS, findApp } from "@/lib/apps/registry";
+import type { AppContext, AppDeepLink } from "@/lib/apps/types";
 import {
   getRecentPipelines,
   setPinned,
@@ -38,12 +34,12 @@ import { formatRelativeTime } from "@/lib/time-format";
 import { cn } from "@/lib/utils";
 
 /**
- * Dashboard layout presets, mapped to Tailwind class strings the
- * dashboard grid container applies.
+ * Dashboard layout presets. The grid that hosts the app cards swaps
+ * its Tailwind class string based on the user's settings choice.
  *
  *   stacked → 1 column, large cards
- *   grid    → standard responsive grid (the previous default)
- *   compact → tighter, more cards visible
+ *   grid    → responsive 1/2/3 columns (default)
+ *   compact → tighter 2/3/4 columns
  */
 const DASHBOARD_LAYOUT_CLASSES: Record<DashboardLayout, string> = {
   stacked: "grid gap-4",
@@ -51,13 +47,12 @@ const DASHBOARD_LAYOUT_CLASSES: Record<DashboardLayout, string> = {
   compact: "grid gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4",
 };
 
-type AppId = "dashboard" | "workspace" | "photos" | "dropbox";
+/** Sentinel for "no app active; show the dashboard". */
+const DASHBOARD_ID = "__dashboard__";
 
 function App() {
-  const [activeApp, setActiveApp] = useState<AppId>("dashboard");
-  const [dropboxInitialPath, setDropboxInitialPath] = useState<
-    string | undefined
-  >(undefined);
+  const [activeAppId, setActiveAppId] = useState<string>(DASHBOARD_ID);
+  const [deepLink, setDeepLink] = useState<AppDeepLink | undefined>(undefined);
   const [recents, setRecents] = useState<RecentPipeline[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [dashboardLayout, setDashboardLayout] = useState<DashboardLayout>(
@@ -82,29 +77,35 @@ function App() {
 
   // Re-read the recents list every time the dashboard becomes visible so
   // a freshly-visited pipeline shows up without a window reload.
+  const onDashboard = activeAppId === DASHBOARD_ID;
   useEffect(() => {
-    if (activeApp === "dashboard") {
-      setRecents(getRecentPipelines());
-    }
-  }, [activeApp]);
+    if (onDashboard) setRecents(getRecentPipelines());
+  }, [onDashboard]);
 
-  const title = useMemo(() => {
-    switch (activeApp) {
-      case "workspace":
-        return "Desktop Workspace";
-      case "photos":
-        return "Photos";
-      case "dropbox":
-        return "Dropbox";
-      default:
-        return "Dashboard";
-    }
-  }, [activeApp]);
+  const goHome = useCallback(() => {
+    setActiveAppId(DASHBOARD_ID);
+    setDeepLink(undefined);
+  }, []);
 
-  function openDropboxAt(path: string | undefined) {
-    setDropboxInitialPath(path);
-    setActiveApp("dropbox");
-  }
+  /** Launch an app via its id, optionally threading a deep-link payload. */
+  const launch = useCallback(
+    (id: string, link?: AppDeepLink) => {
+      setDeepLink(link);
+      setActiveAppId(id);
+    },
+    [],
+  );
+
+  const activeApp = useMemo(
+    () => (onDashboard ? null : findApp(activeAppId)),
+    [onDashboard, activeAppId],
+  );
+
+  const title = onDashboard
+    ? "Dashboard"
+    : activeApp?.title ?? "Unknown app";
+
+  const ctx: AppContext = { goHome, deepLink };
 
   return (
     <div className="flex min-h-screen flex-col gap-6 bg-background p-6">
@@ -117,12 +118,12 @@ function App() {
 
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          {activeApp !== "dashboard" ? (
+          {!onDashboard ? (
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => setActiveApp("dashboard")}
+              onClick={goHome}
             >
               <ArrowLeft data-icon="inline-start" />
               Back to dashboard
@@ -142,59 +143,35 @@ function App() {
         </Button>
       </div>
 
-      {activeApp === "dashboard" ? (
+      {onDashboard ? (
         <div className="flex flex-col gap-4">
-          <div className={DASHBOARD_LAYOUT_CLASSES[dashboardLayout]}>
-            <Card className="flex flex-col">
-              <CardHeader className="flex flex-col gap-2">
-                <CardTitle className="flex items-center gap-2">
-                  <MonitorCog />
-                  Desktop Workspace
-                </CardTitle>
-                <CardDescription>
-                  Open the desktop shell and browse folders inside a single app.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Button type="button" onClick={() => setActiveApp("workspace")}>
-                  Launch workspace app
-                </Button>
-              </CardContent>
-            </Card>
-
-            <Card className="flex flex-col">
-              <CardHeader className="flex flex-col gap-2">
-                <CardTitle className="flex items-center gap-2">
-                  <FolderOpen />
-                  Photo Viewer
-                </CardTitle>
-                <CardDescription>
-                  Browse directories and preview supported image files quickly.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Button type="button" onClick={() => setActiveApp("photos")}>
-                  Open photo app
-                </Button>
-              </CardContent>
-            </Card>
-
-            <Card className="flex flex-col">
-              <CardHeader className="flex flex-col gap-2">
-                <CardTitle className="flex items-center gap-2">
-                  <Cloud />
-                  Dropbox
-                </CardTitle>
-                <CardDescription>
-                  Connect your Dropbox account and browse remote folders.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Button type="button" onClick={() => openDropboxAt(undefined)}>
-                  Open Dropbox
-                </Button>
-              </CardContent>
-            </Card>
+          <div
+            aria-label="Dashboard apps"
+            className={DASHBOARD_LAYOUT_CLASSES[dashboardLayout]}
+          >
+            {APPS.map((app) => {
+              const Icon = app.dashboardCard.icon;
+              const label =
+                app.dashboardCard.launchLabel ?? `Open ${app.title}`;
+              return (
+                <Card key={app.id} className="flex flex-col">
+                  <CardHeader className="flex flex-col gap-2">
+                    <CardTitle className="flex items-center gap-2">
+                      <Icon />
+                      {app.title}
+                    </CardTitle>
+                    <CardDescription>
+                      {app.dashboardCard.description}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Button type="button" onClick={() => launch(app.id)}>
+                      {label}
+                    </Button>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
 
           {recents.length > 0 ? (
@@ -224,7 +201,11 @@ function App() {
                     >
                       <button
                         type="button"
-                        onClick={() => openDropboxAt(r.path)}
+                        // Recent pipelines today only target Dropbox.
+                        // When a second backend (local) wants its own
+                        // recents, the descriptor can declare which
+                        // app to deep-link into.
+                        onClick={() => launch("dropbox", r.path)}
                         className="flex min-w-0 flex-1 items-center justify-between gap-3 px-3 py-2 text-left"
                       >
                         <span className="flex min-w-0 flex-col">
@@ -246,9 +227,7 @@ function App() {
                           setRecents(getRecentPipelines());
                         }}
                         aria-label={
-                          r.pinned
-                            ? `Unpin ${r.name}`
-                            : `Pin ${r.name}`
+                          r.pinned ? `Unpin ${r.name}` : `Pin ${r.name}`
                         }
                         aria-pressed={r.pinned ? "true" : "false"}
                         className={cn(
@@ -266,23 +245,18 @@ function App() {
             </Card>
           ) : null}
         </div>
-      ) : null}
-
-      {activeApp === "workspace" ? (
-        <ErrorBoundary label="Desktop Workspace">
-          <DesktopWorkspaceApp />
+      ) : activeApp ? (
+        <ErrorBoundary label={activeApp.title}>
+          {activeApp.render(ctx)}
         </ErrorBoundary>
-      ) : null}
-      {activeApp === "photos" ? (
-        <ErrorBoundary label="Photos">
-          <PhotosApp />
-        </ErrorBoundary>
-      ) : null}
-      {activeApp === "dropbox" ? (
-        <ErrorBoundary label="Dropbox">
-          <DropboxApp initialPath={dropboxInitialPath} />
-        </ErrorBoundary>
-      ) : null}
+      ) : (
+        <p
+          role="alert"
+          className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
+          Unknown app id: <code>{activeAppId}</code>.
+        </p>
+      )}
 
       <SettingsDialog
         open={settingsOpen}
