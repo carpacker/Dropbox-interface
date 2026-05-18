@@ -149,13 +149,17 @@ surface. Constraints:
   explicit Delete-button click confirms.
 
 ### D-L1. Local-FS writes are bounded by hardcoded byte caps.
-The CRM app introduced three local write commands:
-`local_write_text_file`, `local_copy_file`, and
-`local_create_folder` (the last shipped earlier for local pipelines).
-The renderer can't ask Rust to write or copy a file larger than the
-caps baked into the binary:
+The CRM + Job Tracker apps share a small family of local write
+commands: `local_write_text_file`, `local_append_text_file`,
+`local_copy_file`, and `local_create_folder`. The renderer can't
+ask Rust to write or copy a file larger than the caps baked into
+the binary:
 
 - `local_write_text_file` rejects payloads > 16MB.
+- `local_append_text_file` rejects per-chunk payloads > 16MB **and**
+  rejects appends that would push the file past 16MB cumulatively.
+  Used by the Job Tracker thread writer; a runaway thread file
+  surfaces as a clear error instead of a silently-truncated log.
 - `local_copy_file` rejects sources > 256MB.
 - `local_read_text_file`'s caller-supplied `max_bytes` is clamped to
   a 16MB hard ceiling regardless of what the renderer asks for.
@@ -172,6 +176,12 @@ renames over the destination. A crash between stage and rename
 leaves the original file intact (the stage file persists; user can
 delete it). A crash after rename leaves the new file in place. The
 filesystem never observes a half-written `contacts.csv`.
+
+`local_append_text_file` uses `OpenOptions::append(true)`, which
+maps to `O_APPEND` on POSIX and `FILE_APPEND_DATA` on Windows. The
+kernel serializes appends ≤ PIPE_BUF (typically 4KB; well above a
+JSONL note line) atomically so concurrent appends from a second
+process won't interleave a single line.
 
 ### D-L3. CRM destructive verbs follow the same gate as Dropbox delete.
 The CRM Delete-row affordance reuses `<ConfirmDialog>` with

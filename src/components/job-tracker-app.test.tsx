@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   clearJobTrackerConfig,
@@ -746,5 +746,209 @@ describe("JobTrackerApp — drag between columns", () => {
     expect(
       screen.getByLabelText(/status: backlog/i),
     ).toBeInTheDocument();
+  });
+});
+
+describe("JobTrackerApp — thread writes", () => {
+  beforeEach(() => {
+    saveJobTrackerConfig({ rootPath: "/r" });
+  });
+
+  it("Add note appends a JSONL line + refreshes the thread view", async () => {
+    setupJobsFs({ csvBody: csv });
+
+    const appends: Array<{ path: string; contents: string }> = [];
+    let threadContents = "";
+    setInvokeHandler("local_append_text_file", (args) => {
+      const a = args as { path: string; contents: string };
+      appends.push(a);
+      threadContents += a.contents;
+      return {
+        name: "alpha.jsonl",
+        path: a.path,
+        isDirectory: false,
+        size: threadContents.length,
+        modified: null,
+      };
+    });
+    setInvokeHandler("local_create_folder", () => ({
+      name: "threads",
+      path: "/r/threads",
+      isDirectory: true,
+      size: null,
+      modified: null,
+    }));
+    // The thread effect re-reads after the append; return the
+    // accumulated content.
+    setInvokeHandler("local_read_text_file", (args) => {
+      const path = (args as { path: string }).path;
+      if (path.endsWith("jobs.csv")) return csv;
+      if (path.endsWith("/threads/alpha.jsonl")) return threadContents;
+      return null;
+    });
+
+    const user = userEvent.setup();
+    render(<JobTrackerApp />);
+    await user.click(await screen.findByText("alpha"));
+
+    const panel = await screen.findByRole("complementary", {
+      name: /job detail/i,
+    });
+
+    await user.type(
+      within(panel).getByLabelText(/new note/i),
+      "Initial contact made.",
+    );
+    await user.click(
+      within(panel).getByRole("button", { name: /add note/i }),
+    );
+
+    await waitFor(() => expect(appends.length).toBe(1));
+    expect(appends[0].path).toBe("/r/threads/alpha.jsonl");
+    const parsed = JSON.parse(
+      appends[0].contents.replace(/\n$/, ""),
+    ) as { kind: string; body: string };
+    expect(parsed.kind).toBe("note");
+    expect(parsed.body).toBe("Initial contact made.");
+
+    expect(
+      await within(panel).findByText("Initial contact made."),
+    ).toBeInTheDocument();
+  });
+
+  it("Add note button is disabled for an empty body", async () => {
+    setupJobsFs({ csvBody: csv });
+    const appends: Array<unknown> = [];
+    setInvokeHandler("local_append_text_file", (args) => {
+      appends.push(args);
+      return {
+        name: "alpha.jsonl",
+        path: "/r/threads/alpha.jsonl",
+        isDirectory: false,
+        size: 0,
+        modified: null,
+      };
+    });
+
+    const user = userEvent.setup();
+    render(<JobTrackerApp />);
+    await user.click(await screen.findByText("alpha"));
+    const panel = await screen.findByRole("complementary", {
+      name: /job detail/i,
+    });
+
+    expect(
+      within(panel).getByRole("button", { name: /add note/i }),
+    ).toBeDisabled();
+    expect(appends.length).toBe(0);
+  });
+
+  it("Add note surfaces a Rust-side error inline without clearing the textarea", async () => {
+    setupJobsFs({ csvBody: csv });
+    setInvokeHandler("local_create_folder", () => ({
+      name: "threads",
+      path: "/r/threads",
+      isDirectory: true,
+      size: null,
+      modified: null,
+    }));
+    setInvokeHandler("local_append_text_file", () => {
+      throw new Error("would exceed cap");
+    });
+
+    const user = userEvent.setup();
+    render(<JobTrackerApp />);
+    await user.click(await screen.findByText("alpha"));
+    const panel = await screen.findByRole("complementary", {
+      name: /job detail/i,
+    });
+
+    const textarea = within(panel).getByLabelText(/new note/i) as HTMLTextAreaElement;
+    await user.type(textarea, "Some note");
+    await user.click(within(panel).getByRole("button", { name: /add note/i }));
+
+    expect(
+      await within(panel).findByText(/would exceed cap/i),
+    ).toBeInTheDocument();
+    expect(textarea.value).toBe("Some note");
+  });
+});
+
+describe("JobTrackerApp — CRM linkage", () => {
+  beforeEach(() => {
+    saveJobTrackerConfig({ rootPath: "/r" });
+  });
+
+  it("renders an Open client button next to a client_id column value", async () => {
+    setupJobsFs({
+      csvBody: [
+        "id,client_id,status",
+        "alpha,Ada_Lovelace,Booked",
+        "bravo,,Booked",
+      ].join("\n"),
+    });
+    const onOpenClient = vi.fn();
+    const user = userEvent.setup();
+    render(<JobTrackerApp onOpenClient={onOpenClient} />);
+
+    await user.click(await screen.findByText("alpha"));
+    const panel = await screen.findByRole("complementary", {
+      name: /job detail/i,
+    });
+    const openClient = within(panel).getByRole("button", {
+      name: /open client ada_lovelace/i,
+    });
+    await user.click(openClient);
+    expect(onOpenClient).toHaveBeenCalledWith("Ada_Lovelace");
+  });
+
+  it("does not render Open client when the cell is empty", async () => {
+    setupJobsFs({
+      csvBody: "id,client_id,status\nalpha,,Booked",
+    });
+    const onOpenClient = vi.fn();
+    const user = userEvent.setup();
+    render(<JobTrackerApp onOpenClient={onOpenClient} />);
+
+    await user.click(await screen.findByText("alpha"));
+    const panel = await screen.findByRole("complementary", {
+      name: /job detail/i,
+    });
+    expect(
+      within(panel).queryByRole("button", { name: /open client/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("accepts a plain `client` column (case-insensitive) as a fallback", async () => {
+    setupJobsFs({
+      csvBody: "id,Client,status\nalpha,Acme,Booked",
+    });
+    const onOpenClient = vi.fn();
+    const user = userEvent.setup();
+    render(<JobTrackerApp onOpenClient={onOpenClient} />);
+
+    await user.click(await screen.findByText("alpha"));
+    const panel = await screen.findByRole("complementary", {
+      name: /job detail/i,
+    });
+    expect(
+      within(panel).getByRole("button", { name: /open client acme/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides Open client entirely when onOpenClient isn't supplied", async () => {
+    setupJobsFs({
+      csvBody: "id,client_id,status\nalpha,Ada_Lovelace,Booked",
+    });
+    const user = userEvent.setup();
+    render(<JobTrackerApp />); // no onOpenClient
+
+    await user.click(await screen.findByText("alpha"));
+    const panel = await screen.findByRole("complementary", {
+      name: /job detail/i,
+    });
+    expect(
+      within(panel).queryByRole("button", { name: /open client/i }),
+    ).not.toBeInTheDocument();
   });
 });

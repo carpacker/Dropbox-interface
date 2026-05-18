@@ -27,6 +27,14 @@ export type AppContext = {
   /** Return to the dashboard. Wired by the shell. */
   goHome: () => void;
   /**
+   * Launch another registered app from inside the current one.
+   * Used for cross-app deep-links (e.g. Job Tracker → CRM at a
+   * specific contact). The payload is forwarded to the target
+   * app's `render(ctx)` as `ctx.deepLink`; each target narrows it
+   * at the call site. No-ops when `targetAppId` isn't registered.
+   */
+  launchApp: (targetAppId: string, payload?: AppDeepLink) => void;
+  /**
    * Set when the user launched this app via a deep-link (e.g. a
    * recent-pipelines row); otherwise undefined for a plain card
    * launch.

@@ -265,6 +265,82 @@ fn local_write_text_file(path: String, contents: String) -> Result<FsEntry, Stri
     entry_for_path(&p)
 }
 
+/// Append a UTF-8 text chunk to a file. Used by the Job Tracker thread
+/// writer (`<root>/threads/<rowKey>.jsonl`): each new note becomes one
+/// appended line.
+///
+/// Differences from `local_write_text_file`:
+///   - Creates the file if absent (`OpenOptions::create(true)`).
+///   - Appends to the end of the existing content (`O_APPEND` semantics).
+///     On POSIX this is atomic for writes <= PIPE_BUF, which covers any
+///     plausible note. On Windows the OS provides the same atomicity for
+///     small writes via `FILE_APPEND_DATA`.
+///   - Enforces a *cumulative* size cap: if appending would push the
+///     file past `LOCAL_TEXT_WRITE_MAX_BYTES`, the call is rejected so a
+///     runaway thread can't fill the disk.
+///   - The append chunk itself is also bounded by the same per-chunk
+///     cap as `local_write_text_file` (the cumulative check is on top).
+///
+/// Returns the destination `FsEntry` (with its post-append size) so the
+/// renderer can optimistically reflect the file's new length.
+#[tauri::command]
+fn local_append_text_file(path: String, contents: String) -> Result<FsEntry, String> {
+    use std::io::Write;
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Path is empty".into());
+    }
+    let chunk_len = contents.len() as u64;
+    if chunk_len > LOCAL_TEXT_WRITE_MAX_BYTES {
+        return Err(format!(
+            "contents exceeds {LOCAL_TEXT_WRITE_MAX_BYTES}-byte cap"
+        ));
+    }
+    let p = PathBuf::from(trimmed);
+    if p.is_dir() {
+        return Err(format!("Path is a directory: {trimmed}"));
+    }
+    let parent = p
+        .parent()
+        .ok_or_else(|| format!("Path has no parent: {trimmed}"))?;
+    if !parent.exists() {
+        return Err(format!(
+            "Parent does not exist: {}",
+            parent.to_string_lossy()
+        ));
+    }
+
+    // Cumulative-size check: read current length, project the post-
+    // append size, refuse if it'd exceed the cap. Done before opening
+    // for append so we never write a partial line that crosses the
+    // ceiling.
+    let existing_len = match std::fs::metadata(&p) {
+        Ok(m) if m.is_file() => m.len(),
+        Ok(_) => return Err(format!("Path is not a regular file: {trimmed}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => return Err(e.to_string()),
+    };
+    if existing_len.saturating_add(chunk_len) > LOCAL_TEXT_WRITE_MAX_BYTES {
+        return Err(format!(
+            "file at {trimmed} ({existing_len} bytes) + chunk ({chunk_len} bytes) \
+             would exceed {LOCAL_TEXT_WRITE_MAX_BYTES}-byte cap"
+        ));
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+        .map_err(|e| e.to_string())?;
+    file.write_all(contents.as_bytes())
+        .map_err(|e| e.to_string())?;
+    // Flush is not strictly required for crash-safety here — the OS
+    // page cache will write back — but cheap insurance against losing
+    // a freshly-appended note to a crash within the next few seconds.
+    file.flush().map_err(|e| e.to_string())?;
+    entry_for_path(&p)
+}
+
 /// Copy a file. Used by the CRM "Attach file" affordance: the user
 /// picks a file via the OS open dialog and we copy it into the
 /// per-row sidecar folder. Refuses to overwrite — mirrors `local_move`.
@@ -350,6 +426,7 @@ pub fn run() {
             list_directory,
             local_read_text_file,
             local_write_text_file,
+            local_append_text_file,
             local_move,
             local_create_folder,
             local_copy_file,
@@ -801,6 +878,104 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("exceeds"), "got: {err}");
         assert!(!p.exists(), "partial file leaked at {p:?}");
+    }
+
+    // -------- local_append_text_file ---------------------------------
+
+    #[test]
+    fn local_append_text_file_creates_a_new_file_with_the_chunk() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("thread.jsonl");
+        let body = "{\"at\":\"a\",\"body\":\"hi\"}\n";
+        let entry = local_append_text_file(
+            p.to_string_lossy().into_owned(),
+            body.into(),
+        )
+        .unwrap();
+        assert!(p.exists());
+        assert_eq!(entry.size, Some(body.len() as u64));
+        assert_eq!(fs::read_to_string(&p).unwrap(), body);
+    }
+
+    #[test]
+    fn local_append_text_file_appends_to_existing_content() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("thread.jsonl");
+        fs::write(&p, "line1\n").unwrap();
+        local_append_text_file(
+            p.to_string_lossy().into_owned(),
+            "line2\n".into(),
+        )
+        .unwrap();
+        local_append_text_file(
+            p.to_string_lossy().into_owned(),
+            "line3\n".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            "line1\nline2\nline3\n",
+        );
+    }
+
+    #[test]
+    fn local_append_text_file_rejects_empty_path() {
+        let err = local_append_text_file("".into(), "x".into()).unwrap_err();
+        assert_eq!(err, "Path is empty");
+    }
+
+    #[test]
+    fn local_append_text_file_rejects_directory_target() {
+        let dir = tempdir().unwrap();
+        let err = local_append_text_file(
+            dir.path().to_string_lossy().into_owned(),
+            "x".into(),
+        )
+        .unwrap_err();
+        assert!(err.starts_with("Path is a directory"), "got: {err}");
+    }
+
+    #[test]
+    fn local_append_text_file_rejects_missing_parent() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("nope").join("thread.jsonl");
+        let err = local_append_text_file(
+            p.to_string_lossy().into_owned(),
+            "x".into(),
+        )
+        .unwrap_err();
+        assert!(err.contains("Parent does not exist"), "got: {err}");
+    }
+
+    #[test]
+    fn local_append_text_file_rejects_per_chunk_oversize() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("thread.jsonl");
+        let huge = "x".repeat((LOCAL_TEXT_WRITE_MAX_BYTES as usize) + 1);
+        let err = local_append_text_file(p.to_string_lossy().into_owned(), huge)
+            .unwrap_err();
+        assert!(err.contains("exceeds"), "got: {err}");
+        assert!(!p.exists(), "partial file leaked at {p:?}");
+    }
+
+    #[test]
+    fn local_append_text_file_rejects_cumulative_oversize() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("thread.jsonl");
+        // Existing file already at the cap.
+        fs::write(&p, vec![b'x'; LOCAL_TEXT_WRITE_MAX_BYTES as usize]).unwrap();
+        // Appending even a single byte should be rejected.
+        let err = local_append_text_file(
+            p.to_string_lossy().into_owned(),
+            "x".into(),
+        )
+        .unwrap_err();
+        assert!(err.contains("would exceed"), "got: {err}");
+        // Existing content untouched.
+        assert_eq!(
+            fs::metadata(&p).unwrap().len(),
+            LOCAL_TEXT_WRITE_MAX_BYTES,
+        );
     }
 
     // -------- local_copy_file ----------------------------------------

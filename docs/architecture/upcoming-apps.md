@@ -156,23 +156,45 @@ choices; v2 work continues from here.
 - **`JobRowEditor` accepts a `mode` discriminator** (`{ kind: "edit"
   | "add" }`); same modal handles both. Same shape as `CrmRowEditor`.
 
-### Deferred to v3 (in priority order)
+### What v3 shipped (`claude/threads-and-crm-linkage`)
 
-1. **Thread writes.** `local_write_text_file` is overwrite-only;
-   true multi-writer append needs either a new `local_append_text_file`
-   command (preferred — append O_APPEND is atomic on POSIX for
-   small writes) or pessimistic read-modify-write with a generation
-   counter.
-2. **CRM linkage via `client_id`.** Add an `initialRowKey` deep-link
-   to `CrmApp` so a job's "Client" row can launch the CRM at the
-   right contact.
-3. **Declared status order.** When a sidecar `.job-tracker.json`
+- **Thread writes** via a new `local_append_text_file` Rust command
+  (O_APPEND, atomic for small writes on POSIX/Windows). Cumulative
+  size cap of 16MB per thread file — a runaway log surfaces as a
+  clear error instead of silently truncating. The Job Tracker
+  detail panel grew a notes composer (textarea + Save). Defaults
+  author to "you"; a richer per-user setting is a follow-up.
+  `job-thread.ts` exports `serializeThreadEntry` so the renderer
+  builds the JSONL line and the Rust side just appends it.
+- **CRM linkage via `client_id`** (case-insensitive; falls back to
+  `client`). The Job Tracker detail panel renders an "Open client"
+  button next to the cell value; clicking it calls
+  `ctx.launchApp("crm", { rowKey })`. CRM's deep-link payload
+  parser accepts either a string (root path, the existing
+  shape) or `{ rootPath?, rowKey? }`. The CRM app applies
+  `initialRowKey` once the CSV finishes loading so the detail
+  panel opens automatically.
+- **Registry seam: `AppContext.launchApp(id, payload?)`.** Cross-
+  app jumps now route through this method instead of being a
+  shell-only verb. App descriptors that don't need cross-app
+  navigation just ignore it.
+
+### Deferred to v4 (in priority order)
+
+1. **Declared status order.** When a sidecar `.job-tracker.json`
    declares an ordered status list, derive columns from it instead
    of from observed rows — lets the user pre-create empty columns.
-4. **Undoable status changes.** Drag-into-column is reversible
+2. **Undoable status changes.** Drag-into-column is reversible
    today only by manual drag back. Add a transient toast with an
    Undo button (8s, mirrors the pipeline Promote toast) so an
    accidental drop is one click away from reversal.
+3. **Per-user `by` on thread writes.** Currently the note author
+   defaults to `"you"`. A small settings panel field (mirrors
+   `settings.ts`) keyed on a per-machine identity would be enough.
+4. **Email-link composer.** `ThreadEntry.kind === "email-link"` is
+   already a valid shape and the parser handles it; the composer
+   could grow a "Link email" affordance that records a mailto:
+   URL or local message path.
 
 ### Original sketch (preserved for reference)
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseThread } from "./job-thread";
+import { parseThread, serializeThreadEntry } from "./job-thread";
 
 describe("parseThread", () => {
   it("parses well-formed JSONL into entries", () => {
@@ -80,5 +80,47 @@ describe("parseThread", () => {
     expect(r.entries).toHaveLength(1);
     expect(r.entries[0].kind).toBe("email-link");
     expect(r.skipped).toBe(3);
+  });
+});
+
+describe("serializeThreadEntry", () => {
+  it("appends a trailing newline so successive appends start on new lines", () => {
+    const line = serializeThreadEntry({
+      at: "2026-05-01T10:00:00Z",
+      by: "Carson",
+      kind: "note",
+      body: "hi",
+    });
+    expect(line.endsWith("\n")).toBe(true);
+  });
+
+  it("round-trips through parseThread without loss", () => {
+    const a = serializeThreadEntry({
+      at: "2026-05-01T10:00:00Z",
+      by: "Carson",
+      kind: "note",
+      body: "first",
+    });
+    const b = serializeThreadEntry({
+      at: "2026-05-02T14:30:00Z",
+      by: "Paige",
+      kind: "email-link",
+      body: 'with "quotes" and a , comma',
+    });
+    const parsed = parseThread(a + b);
+    expect(parsed.skipped).toBe(0);
+    expect(parsed.entries).toHaveLength(2);
+    expect(parsed.entries[1].body).toBe('with "quotes" and a , comma');
+  });
+
+  it("preserves embedded newlines inside the body field", () => {
+    const original = {
+      at: "x",
+      by: "y",
+      kind: "note" as const,
+      body: "line one\nline two",
+    };
+    const parsed = parseThread(serializeThreadEntry(original));
+    expect(parsed.entries[0].body).toBe("line one\nline two");
   });
 });

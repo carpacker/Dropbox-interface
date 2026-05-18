@@ -563,3 +563,27 @@ describe("CrmApp — attachments", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("CrmApp — initialRowKey deep-link", () => {
+  it("opens the detail panel for the deep-linked row after load", async () => {
+    saveCrmConfig({ rootPath: "/r" });
+    setupCrmFs({ rootPath: "/r", csvBody: csv });
+    render(<CrmApp initialRowKey="ada" />);
+    // Detail panel opens automatically once the CSV finishes loading.
+    const panel = await screen.findByRole("complementary", {
+      name: /row detail/i,
+    });
+    expect(within(panel).getByText("ada@example.com")).toBeInTheDocument();
+  });
+
+  it("is a noop when the deep-linked row isn't present in the CSV", async () => {
+    saveCrmConfig({ rootPath: "/r" });
+    setupCrmFs({ rootPath: "/r", csvBody: csv });
+    render(<CrmApp initialRowKey="not_a_real_row" />);
+    // The CSV loads + the table renders, but no detail panel opens.
+    await screen.findByText("Ada Lovelace");
+    expect(
+      screen.queryByRole("complementary", { name: /row detail/i }),
+    ).not.toBeInTheDocument();
+  });
+});

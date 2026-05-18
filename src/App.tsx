@@ -118,7 +118,7 @@ function App() {
     ? "Dashboard"
     : activeApp?.title ?? "Unknown app";
 
-  const ctx: AppContext = { goHome, deepLink };
+  const ctx: AppContext = { goHome, launchApp: launch, deepLink };
 
   return (
     <div className="flex min-h-screen flex-col gap-6 bg-background p-6">

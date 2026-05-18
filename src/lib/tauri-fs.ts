@@ -85,6 +85,18 @@ export function writeTextFile(path: string, contents: string) {
 }
 
 /**
+ * Append a UTF-8 chunk to an existing file (or create it). Used by
+ * the Job Tracker thread writer — each new note is one appended
+ * JSONL line. The Rust side uses `O_APPEND` so concurrent appends
+ * from another process won't lose data (atomic for small writes on
+ * POSIX/Windows). Bounded by both a per-chunk cap (16MB) and a
+ * cumulative file-size cap (also 16MB).
+ */
+export function appendTextFile(path: string, contents: string) {
+  return invoke<FsEntry>("local_append_text_file", { path, contents });
+}
+
+/**
  * Copy a file. Refuses to overwrite an existing destination; source
  * must be a file (not a directory). Used by the CRM "Attach file"
  * affordance to drop a user-chosen file into the row's sidecar.

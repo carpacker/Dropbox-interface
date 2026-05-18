@@ -92,7 +92,19 @@ type CrmStatus =
     }
   | { kind: "error"; message: string };
 
-export function CrmApp({ initialRoot }: { initialRoot?: string } = {}) {
+export function CrmApp({
+  initialRoot,
+  initialRowKey,
+}: {
+  initialRoot?: string;
+  /**
+   * When provided alongside (or after) initialRoot, select that row
+   * once the CSV finishes loading. Used by the Job Tracker's
+   * "Open client" deep-link so jumping from a job to its contact
+   * lands in the detail panel, not the bare table.
+   */
+  initialRowKey?: string;
+} = {}) {
   const [status, setStatus] = useState<CrmStatus>({ kind: "unconfigured" });
   const [filter, setFilter] = useState("");
   const [sortKey, setSortKey] = useState<string | null>(null);
@@ -112,6 +124,15 @@ export function CrmApp({ initialRoot }: { initialRoot?: string } = {}) {
     const cfg = loadCrmConfig();
     if (cfg.rootPath) void load(cfg.rootPath);
   }, [initialRoot]);
+
+  // Apply the row-key deep-link once the CSV is ready. Setting the
+  // selection on a not-yet-loaded CRM is a noop; the user would just
+  // not see the panel. Wait for status.kind === "ready", then select.
+  useEffect(() => {
+    if (!initialRowKey) return;
+    if (status.kind !== "ready") return;
+    setSelectedKey(initialRowKey);
+  }, [initialRowKey, status.kind]);
 
   const load = useCallback(async (rootPath: string) => {
     setStatus({ kind: "loading" });
@@ -1199,6 +1220,33 @@ function CrmRowEditor({
   );
 }
 
+/**
+ * Deep-link payload accepted by CrmApp. Two shapes:
+ *
+ *   - `string` → treated as `rootPath` (Recent CRMs / Files-tab launch)
+ *   - `{ rootPath?, rowKey? }` → richer payload; `rowKey` opens the
+ *     detail panel after the CSV loads (Job Tracker's "Open client"
+ *     deep-link).
+ */
+type CrmDeepLink =
+  | string
+  | { rootPath?: string; rowKey?: string }
+  | unknown;
+
+function parseCrmDeepLink(
+  link: unknown,
+): { rootPath?: string; rowKey?: string } {
+  if (typeof link === "string") return { rootPath: link };
+  if (link && typeof link === "object") {
+    const o = link as { rootPath?: unknown; rowKey?: unknown };
+    return {
+      rootPath: typeof o.rootPath === "string" ? o.rootPath : undefined,
+      rowKey: typeof o.rowKey === "string" ? o.rowKey : undefined,
+    };
+  }
+  return {};
+}
+
 export const crmAppDescriptor: AppDescriptor = {
   id: "crm",
   title: "CRM",
@@ -1209,9 +1257,8 @@ export const crmAppDescriptor: AppDescriptor = {
     launchLabel: "Open CRM",
     category: "data",
   },
-  render: ({ deepLink }) => (
-    <CrmApp
-      initialRoot={typeof deepLink === "string" ? deepLink : undefined}
-    />
-  ),
+  render: ({ deepLink }) => {
+    const { rootPath, rowKey } = parseCrmDeepLink(deepLink as CrmDeepLink);
+    return <CrmApp initialRoot={rootPath} initialRowKey={rowKey} />;
+  },
 };

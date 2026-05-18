@@ -2,10 +2,10 @@
  * Per-job activity log parser. Each job's thread lives at
  * `<root>/threads/<rowKey>.jsonl` — one JSON object per line.
  *
- * Read-only for v1. Malformed lines are dropped (with a count
- * surfaced to the caller) so a single bad line doesn't blank the
- * panel. Writes (proper append handling, atomic rotation when the
- * file approaches the cap) come in the next round.
+ * Read-only in v1; v3 adds append-only writes via `serializeThreadEntry`
+ * + the new `local_append_text_file` Rust command. Malformed lines are
+ * still dropped (with a count surfaced to the caller) so a single bad
+ * line doesn't blank the panel.
  */
 
 export type ThreadEntryKind = "note" | "email-link";
@@ -69,4 +69,18 @@ export function parseThread(input: string): ThreadParseResult {
     }
   }
   return { entries, skipped };
+}
+
+/**
+ * Serialize a `ThreadEntry` into a single JSONL line, including the
+ * terminating newline. Caller appends the result to
+ * `<root>/threads/<rowKey>.jsonl` via `appendTextFile` — newline-
+ * terminated so the next append's content starts cleanly on a new line.
+ *
+ * The `JSON.stringify` output is deterministic for our shape (no
+ * function/undefined values, no Date instances) so round-tripping
+ * through `parseThread` is lossless.
+ */
+export function serializeThreadEntry(entry: ThreadEntry): string {
+  return JSON.stringify(entry) + "\n";
 }

@@ -313,4 +313,70 @@ describe("App — Recent Job Trackers card", () => {
   });
 });
 
+describe("App — cross-app deep-link (Job Tracker → CRM)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("Open client in Job Tracker launches CRM at the linked row", async () => {
+    // Both apps need a configured root so they auto-load on mount /
+    // launch. Saved configs are read at mount; CRM's effect then
+    // also applies the initialRowKey deep-link.
+    localStorage.setItem(
+      "dropbox-interface:job-tracker:v1",
+      JSON.stringify({ rootPath: "/jobs" }),
+    );
+    localStorage.setItem(
+      "dropbox-interface:crm:v1",
+      JSON.stringify({ rootPath: "/crm" }),
+    );
+
+    setInvokeHandler("local_read_text_file", (args) => {
+      const path = (args as { path: string }).path;
+      if (path === "/jobs/jobs.csv") {
+        return [
+          "id,client_id,status",
+          "alpha,Ada_Lovelace,Booked",
+        ].join("\n");
+      }
+      if (path === "/crm/contacts.csv") {
+        return [
+          "id,name,email",
+          "Ada_Lovelace,Ada Lovelace,ada@example.com",
+          "Linus_Torvalds,Linus Torvalds,linus@example.com",
+        ].join("\n");
+      }
+      return null;
+    });
+    setInvokeHandler("list_directory", () => {
+      throw new Error("Not a directory");
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    // Launch Job Tracker.
+    await user.click(screen.getByRole("button", { name: /open job tracker/i }));
+    // Wait for the board, click the job's card, click Open client.
+    await user.click(await screen.findByText("alpha"));
+    const jobPanel = await screen.findByRole("complementary", {
+      name: /job detail/i,
+    });
+    await user.click(
+      within(jobPanel).getByRole("button", {
+        name: /open client ada_lovelace/i,
+      }),
+    );
+
+    // Now in CRM, at Ada's detail panel.
+    const crmPanel = await screen.findByRole("complementary", {
+      name: /row detail/i,
+    });
+    expect(within(crmPanel).getByText("ada@example.com")).toBeInTheDocument();
+  });
+});
+
 // formatRelativeTime tests live in src/lib/time-format.test.ts now.

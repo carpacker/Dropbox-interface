@@ -32,6 +32,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   Briefcase,
   ChevronLeft,
+  ExternalLink,
   File,
   FolderOpen,
   ImageIcon,
@@ -83,8 +84,13 @@ import {
   pickStatusColumn,
   statusOf,
 } from "@/lib/job-status";
-import { parseThread, type ThreadEntry } from "@/lib/job-thread";
 import {
+  parseThread,
+  serializeThreadEntry,
+  type ThreadEntry,
+} from "@/lib/job-thread";
+import {
+  appendTextFile,
   copyFile,
   createFolder,
   imageSrc,
@@ -120,7 +126,21 @@ type Status =
     }
   | { kind: "error"; message: string };
 
-export function JobTrackerApp({ initialRoot }: { initialRoot?: string } = {}) {
+export function JobTrackerApp({
+  initialRoot,
+  onOpenClient,
+}: {
+  initialRoot?: string;
+  /**
+   * Optional launcher for a CRM deep-link. When supplied, the job
+   * detail panel renders an "Open client" button next to the row's
+   * `client_id` (or `client`, case-insensitive) field value, which
+   * the descriptor wires to `ctx.launchApp("crm", { rowKey })`.
+   * When omitted, the field renders inline only — keeps the app
+   * usable standalone (tests, no-registry environments).
+   */
+  onOpenClient?: (clientKey: string) => void;
+} = {}) {
   const [status, setStatus] = useState<Status>({ kind: "unconfigured" });
   const [filter, setFilter] = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -335,6 +355,7 @@ export function JobTrackerApp({ initialRoot }: { initialRoot?: string } = {}) {
       onReload={() => void load(status.rootPath)}
       onPickDifferent={() => void handlePickRoot()}
       persistRows={persistRows}
+      onOpenClient={onOpenClient}
     />
   );
 }
@@ -352,6 +373,7 @@ type JobTrackerBoardProps = {
   onReload: () => void;
   onPickDifferent: () => void;
   persistRows: (next: CsvRow[]) => Promise<boolean>;
+  onOpenClient?: (clientKey: string) => void;
 };
 
 function JobTrackerBoard({
@@ -367,6 +389,7 @@ function JobTrackerBoard({
   onReload,
   onPickDifferent,
   persistRows,
+  onOpenClient,
 }: JobTrackerBoardProps) {
   // Modal mode for the row editor. `edit` carries the original
   // row so save can replace it in place; `add` carries nothing —
@@ -634,6 +657,7 @@ function JobTrackerBoard({
               row={selected.row}
               headers={headers}
               onClose={() => onSelect(null)}
+              onOpenClient={onOpenClient}
               onEdit={() =>
                 setEditing({
                   kind: "edit",
@@ -857,6 +881,18 @@ function isJobDragPayload(v: unknown): v is { rowKey: string } {
   );
 }
 
+/**
+ * Case-insensitive match for the CRM-linkage column. Preferred name
+ * is `client_id`; fall back to plain `client`. The cell value is a
+ * CRM rowKey — sanitized at write time, so a Job Tracker CSV with
+ * a `client_id` of `Ada_Lovelace` matches the CRM row keyed by the
+ * same string.
+ */
+function isClientColumn(header: string): boolean {
+  const h = header.trim().toLowerCase();
+  return h === "client_id" || h === "client";
+}
+
 function CardSubtitle({
   row,
   skip,
@@ -902,6 +938,7 @@ function JobDetailPanel({
   onClose,
   onEdit,
   onDelete,
+  onOpenClient,
 }: {
   rootPath: string;
   rowKey: string;
@@ -910,13 +947,22 @@ function JobDetailPanel({
   onClose: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onOpenClient?: (clientKey: string) => void;
 }) {
   const [files, setFiles] = useState<FilesState>({ kind: "loading" });
   const [thread, setThread] = useState<ThreadState>({ kind: "loading" });
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [threadTick, setThreadTick] = useState(0);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [attachInFlight, setAttachInFlight] = useState(false);
+  // Note composer state. `noteBody` is the textarea content; the
+  // author defaults to "you" until a per-user setting lands. Errors
+  // surface as an inline alert beneath the textarea so the user
+  // doesn't have to scroll back up to the existing thread view.
+  const [noteBody, setNoteBody] = useState("");
+  const [noteError, setNoteError] = useState<string | null>(null);
+  const [noteInFlight, setNoteInFlight] = useState(false);
 
   // Files effect — same shape as the CRM detail panel.
   useEffect(() => {
@@ -977,7 +1023,47 @@ function JobDetailPanel({
     return () => {
       cancelled = true;
     };
-  }, [rootPath, rowKey]);
+  }, [rootPath, rowKey, threadTick]);
+
+  async function handleAddNote() {
+    const body = noteBody.trim();
+    if (body === "") {
+      setNoteError("Note body can't be empty.");
+      return;
+    }
+    setNoteError(null);
+    setNoteInFlight(true);
+    try {
+      // Ensure the parent threads/ folder exists. Ignore "already
+      // exists" the same way the attach flow does.
+      const threadPath = jobThreadPathFor(rootPath, rowKey);
+      const sep = threadPath.includes("\\") ? "\\" : "/";
+      const threadsDir = threadPath.replace(
+        new RegExp(`\\${sep}[^${sep === "\\" ? "\\\\" : "/"}]+$`),
+        "",
+      );
+      try {
+        await createFolder(threadsDir);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("already exists")) throw err;
+      }
+      const line = serializeThreadEntry({
+        at: new Date().toISOString(),
+        by: "you",
+        kind: "note",
+        body,
+      });
+      await appendTextFile(threadPath, line);
+      setNoteBody("");
+      // Force the thread effect to re-run so the new line shows up.
+      setThreadTick((n) => n + 1);
+    } catch (e) {
+      setNoteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setNoteInFlight(false);
+    }
+  }
 
   async function handleAttach() {
     setAttachError(null);
@@ -1066,14 +1152,32 @@ function JobDetailPanel({
           Fields
         </p>
         <dl className="flex flex-col gap-1.5">
-          {headers.map((h) => (
-            <div key={h} className="flex flex-col">
-              <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                {h}
-              </dt>
-              <dd className="break-words text-sm">{row[h] ?? ""}</dd>
-            </div>
-          ))}
+          {headers.map((h) => {
+            const isClient = isClientColumn(h);
+            const value = row[h] ?? "";
+            return (
+              <div key={h} className="flex flex-col">
+                <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  {h}
+                </dt>
+                <dd className="flex items-center justify-between gap-2 break-words text-sm">
+                  <span>{value}</span>
+                  {isClient && onOpenClient && value.trim() !== "" ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onOpenClient(value.trim())}
+                      aria-label={`Open client ${value.trim()} in the CRM`}
+                    >
+                      <ExternalLink data-icon="inline-start" />
+                      Open client
+                    </Button>
+                  ) : null}
+                </dd>
+              </div>
+            );
+          })}
         </dl>
       </div>
 
@@ -1146,6 +1250,41 @@ function JobDetailPanel({
           Thread
         </p>
         <JobThreadView state={thread} />
+
+        <form
+          className="flex flex-col gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleAddNote();
+          }}
+        >
+          <textarea
+            value={noteBody}
+            onChange={(e) => setNoteBody(e.currentTarget.value)}
+            rows={3}
+            disabled={noteInFlight}
+            aria-label="New note"
+            placeholder="Add a note to this job's thread…"
+            className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          {noteError ? (
+            <p
+              role="alert"
+              className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            >
+              {noteError}
+            </p>
+          ) : null}
+          <div className="flex justify-end">
+            <Button
+              type="submit"
+              size="sm"
+              disabled={noteInFlight || noteBody.trim() === ""}
+            >
+              {noteInFlight ? "Saving…" : "Add note"}
+            </Button>
+          </div>
+        </form>
       </div>
 
       {previewPath && isImageFile(previewPath) ? (
@@ -1514,9 +1653,14 @@ export const jobTrackerAppDescriptor: AppDescriptor = {
     launchLabel: "Open Job Tracker",
     category: "data",
   },
-  render: ({ deepLink }) => (
+  render: ({ deepLink, launchApp }) => (
     <JobTrackerApp
       initialRoot={typeof deepLink === "string" ? deepLink : undefined}
+      onOpenClient={(clientKey) =>
+        // Launch the CRM at this contact. CrmApp accepts a `rowKey`
+        // deep-link object; the descriptor unpacks both fields.
+        launchApp("crm", { rowKey: clientKey })
+      }
     />
   ),
 };
