@@ -269,3 +269,297 @@ describe("CrmApp — edge cases", () => {
     expect(screen.queryByText("bad row")).not.toBeInTheDocument();
   });
 });
+
+describe("CrmApp — writes", () => {
+  beforeEach(() => {
+    saveCrmConfig({ rootPath: "/r" });
+  });
+
+  function captureWrites() {
+    const captured: Array<{ path: string; contents: string }> = [];
+    setInvokeHandler("local_write_text_file", (args) => {
+      const a = args as { path: string; contents: string };
+      captured.push(a);
+      return {
+        name: "contacts.csv",
+        path: a.path,
+        isDirectory: false,
+        size: a.contents.length,
+        modified: null,
+      };
+    });
+    return captured;
+  }
+
+  it("adds a new row via the Add row dialog and rewrites the CSV", async () => {
+    setupCrmFs({ rootPath: "/r", csvBody: csv });
+    const writes = captureWrites();
+
+    const user = userEvent.setup();
+    render(<CrmApp />);
+    await screen.findByText("Ada Lovelace");
+
+    await user.click(screen.getByRole("button", { name: /add a new row/i }));
+
+    const dialog = await screen.findByRole("dialog", { name: /add row/i });
+    await user.type(within(dialog).getByLabelText("id"), "marie");
+    await user.type(within(dialog).getByLabelText("name"), "Marie Curie");
+    await user.type(within(dialog).getByLabelText("email"), "marie@example.com");
+    await user.type(within(dialog).getByLabelText("company"), "Radium Inc");
+    await user.click(within(dialog).getByRole("button", { name: /save/i }));
+
+    expect(await screen.findByText("Marie Curie")).toBeInTheDocument();
+    expect(writes.length).toBe(1);
+    expect(writes[0].path).toBe("/r/contacts.csv");
+    expect(writes[0].contents).toMatch(/marie,Marie Curie/);
+  });
+
+  it("refuses to save an add when the key column is empty", async () => {
+    setupCrmFs({ rootPath: "/r", csvBody: csv });
+    captureWrites();
+
+    const user = userEvent.setup();
+    render(<CrmApp />);
+    await screen.findByText("Ada Lovelace");
+    await user.click(screen.getByRole("button", { name: /add a new row/i }));
+
+    const dialog = await screen.findByRole("dialog", { name: /add row/i });
+    // Save with id blank.
+    await user.click(within(dialog).getByRole("button", { name: /save/i }));
+    expect(
+      within(dialog).getByText(/id column is required/i),
+    ).toBeInTheDocument();
+  });
+
+  it("edits a row in place and persists the updated CSV", async () => {
+    setupCrmFs({ rootPath: "/r", csvBody: csv });
+    const writes = captureWrites();
+
+    const user = userEvent.setup();
+    render(<CrmApp />);
+    await screen.findByText("Ada Lovelace");
+
+    await user.click(screen.getByText("Ada Lovelace"));
+    const panel = await screen.findByRole("complementary", {
+      name: /row detail/i,
+    });
+    await user.click(within(panel).getByRole("button", { name: /edit row/i }));
+
+    const dialog = await screen.findByRole("dialog", { name: /edit row/i });
+    const company = within(dialog).getByLabelText("company") as HTMLInputElement;
+    await user.clear(company);
+    await user.type(company, "Babbage Labs");
+    await user.click(within(dialog).getByRole("button", { name: /save/i }));
+
+    // "Babbage Labs" appears in both the table row and the detail
+    // panel echo — just wait for at least one to land.
+    await waitFor(() =>
+      expect(screen.getAllByText("Babbage Labs").length).toBeGreaterThan(0),
+    );
+    expect(writes.length).toBe(1);
+    expect(writes[0].contents).toMatch(/ada,Ada Lovelace,.*Babbage Labs/);
+  });
+
+  it("delete row asks for confirmation, then rewrites the CSV without the row", async () => {
+    setupCrmFs({ rootPath: "/r", csvBody: csv });
+    const writes = captureWrites();
+
+    const user = userEvent.setup();
+    render(<CrmApp />);
+    await screen.findByText("Ada Lovelace");
+
+    await user.click(screen.getByText("Ada Lovelace"));
+    const panel = await screen.findByRole("complementary", {
+      name: /row detail/i,
+    });
+    await user.click(
+      within(panel).getByRole("button", { name: /delete row/i }),
+    );
+
+    const confirm = await screen.findByRole("dialog", {
+      name: /delete this row/i,
+    });
+    await user.click(within(confirm).getByRole("button", { name: /^delete$/i }));
+
+    // Ada is gone from the table.
+    await waitFor(() =>
+      expect(screen.queryByText("Ada Lovelace")).not.toBeInTheDocument(),
+    );
+    expect(writes.length).toBe(1);
+    expect(writes[0].contents).not.toMatch(/Ada Lovelace/);
+    expect(writes[0].contents).toMatch(/Grace Hopper/);
+  });
+
+  it("delete row cancel does not rewrite the CSV", async () => {
+    setupCrmFs({ rootPath: "/r", csvBody: csv });
+    const writes = captureWrites();
+
+    const user = userEvent.setup();
+    render(<CrmApp />);
+    await screen.findByText("Ada Lovelace");
+
+    await user.click(screen.getByText("Ada Lovelace"));
+    const panel = await screen.findByRole("complementary", {
+      name: /row detail/i,
+    });
+    await user.click(
+      within(panel).getByRole("button", { name: /delete row/i }),
+    );
+    const confirm = await screen.findByRole("dialog", {
+      name: /delete this row/i,
+    });
+    await user.click(within(confirm).getByRole("button", { name: /cancel/i }));
+
+    // Ada still appears at least once (table row + detail panel echo).
+    expect(screen.getAllByText("Ada Lovelace").length).toBeGreaterThan(0);
+    expect(writes.length).toBe(0);
+  });
+});
+
+describe("CrmApp — attachments", () => {
+  beforeEach(() => {
+    saveCrmConfig({ rootPath: "/r" });
+  });
+
+  it("attaches a file via the picker: creates the folder if missing, then copies", async () => {
+    setupCrmFs({ rootPath: "/r", csvBody: csv });
+
+    let folderCreated = false;
+    setInvokeHandler("local_create_folder", (args) => {
+      const a = args as { path: string };
+      expect(a.path).toBe("/r/files/ada");
+      folderCreated = true;
+      return {
+        name: "ada",
+        path: a.path,
+        isDirectory: true,
+        size: null,
+        modified: null,
+      };
+    });
+    const copies: Array<{ from: string; to: string }> = [];
+    setInvokeHandler("local_copy_file", (args) => {
+      const a = args as { fromPath: string; toPath: string };
+      copies.push({ from: a.fromPath, to: a.toPath });
+      return {
+        name: "spec.pdf",
+        path: a.toPath,
+        isDirectory: false,
+        size: 1234,
+        modified: null,
+      };
+    });
+
+    // After the copy, list_directory for /r/files/ada returns the
+    // attached file. Override the default mock that throws.
+    let attached = false;
+    setInvokeHandler("list_directory", (args) => {
+      const path = (args as { path: string }).path;
+      if (path === "/r/files/ada") {
+        if (!attached) throw new Error("Not a directory: " + path);
+        return [
+          {
+            name: "spec.pdf",
+            path: "/r/files/ada/spec.pdf",
+            isDirectory: false,
+            size: 1234,
+            modified: null,
+          },
+        ];
+      }
+      throw new Error("Not a directory: " + path);
+    });
+
+    setNextOpenResult("/elsewhere/spec.pdf");
+    const user = userEvent.setup();
+    render(<CrmApp />);
+    await screen.findByText("Ada Lovelace");
+
+    await user.click(screen.getByText("Ada Lovelace"));
+    const panel = await screen.findByRole("complementary", {
+      name: /row detail/i,
+    });
+
+    attached = true; // next list_directory should return the file.
+    await user.click(
+      within(panel).getByRole("button", { name: /attach file to row/i }),
+    );
+
+    await waitFor(() => expect(folderCreated).toBe(true));
+    expect(copies).toEqual([
+      { from: "/elsewhere/spec.pdf", to: "/r/files/ada/spec.pdf" },
+    ]);
+    expect(await within(panel).findByText("spec.pdf")).toBeInTheDocument();
+  });
+
+  it("attaching with the folder already present skips creation and still copies", async () => {
+    setupCrmFs({
+      rootPath: "/r",
+      csvBody: csv,
+      filesByRowKey: { ada: [] }, // folder exists but empty
+    });
+    setInvokeHandler("local_create_folder", () => {
+      throw new Error("Path already exists: /r/files/ada");
+    });
+    const copies: Array<{ from: string; to: string }> = [];
+    setInvokeHandler("local_copy_file", (args) => {
+      const a = args as { fromPath: string; toPath: string };
+      copies.push({ from: a.fromPath, to: a.toPath });
+      return {
+        name: "spec.pdf",
+        path: a.toPath,
+        isDirectory: false,
+        size: 1,
+        modified: null,
+      };
+    });
+
+    setNextOpenResult("/elsewhere/spec.pdf");
+    const user = userEvent.setup();
+    render(<CrmApp />);
+    await screen.findByText("Ada Lovelace");
+
+    await user.click(screen.getByText("Ada Lovelace"));
+    const panel = await screen.findByRole("complementary", {
+      name: /row detail/i,
+    });
+    await user.click(
+      within(panel).getByRole("button", { name: /attach file to row/i }),
+    );
+
+    await waitFor(() =>
+      expect(copies).toEqual([
+        { from: "/elsewhere/spec.pdf", to: "/r/files/ada/spec.pdf" },
+      ]),
+    );
+  });
+
+  it("attach surfaces a Rust-side copy error inline", async () => {
+    setupCrmFs({ rootPath: "/r", csvBody: csv });
+    setInvokeHandler("local_create_folder", () => ({
+      name: "ada",
+      path: "/r/files/ada",
+      isDirectory: true,
+      size: null,
+      modified: null,
+    }));
+    setInvokeHandler("local_copy_file", () => {
+      throw new Error("Destination already exists: /r/files/ada/spec.pdf");
+    });
+    setNextOpenResult("/elsewhere/spec.pdf");
+
+    const user = userEvent.setup();
+    render(<CrmApp />);
+    await screen.findByText("Ada Lovelace");
+    await user.click(screen.getByText("Ada Lovelace"));
+    const panel = await screen.findByRole("complementary", {
+      name: /row detail/i,
+    });
+    await user.click(
+      within(panel).getByRole("button", { name: /attach file to row/i }),
+    );
+    expect(
+      await within(panel).findByText(/destination already exists/i),
+    ).toBeInTheDocument();
+  });
+});

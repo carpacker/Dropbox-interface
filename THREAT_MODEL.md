@@ -148,6 +148,59 @@ surface. Constraints:
 - `Esc` cancels; `Cancel` cancels; backdrop click cancels. Only an
   explicit Delete-button click confirms.
 
+### D-L1. Local-FS writes are bounded by hardcoded byte caps.
+The CRM app introduced three local write commands:
+`local_write_text_file`, `local_copy_file`, and
+`local_create_folder` (the last shipped earlier for local pipelines).
+The renderer can't ask Rust to write or copy a file larger than the
+caps baked into the binary:
+
+- `local_write_text_file` rejects payloads > 16MB.
+- `local_copy_file` rejects sources > 256MB.
+- `local_read_text_file`'s caller-supplied `max_bytes` is clamped to
+  a 16MB hard ceiling regardless of what the renderer asks for.
+
+These ceilings are intentionally generous (real CRM CSVs, real PDF
+attachments) but bounded — a buggy or hijacked renderer can't tell
+Rust to slurp an entire disk. None of the write commands accept
+shell strings or commands; all inputs are paths the user already
+chose via OS dialogs (or strings derived from those paths).
+
+### D-L2. Local file writes are atomic.
+`local_write_text_file` stages to `<dir>/.<basename>.tmp` then
+renames over the destination. A crash between stage and rename
+leaves the original file intact (the stage file persists; user can
+delete it). A crash after rename leaves the new file in place. The
+filesystem never observes a half-written `contacts.csv`.
+
+### D-L3. CRM destructive verbs follow the same gate as Dropbox delete.
+The CRM Delete-row affordance reuses `<ConfirmDialog>` with
+`destructive` styling and the in-flight disable that
+`dropbox_delete_v2` uses (§D8e). Differences from the Dropbox path:
+
+- **Single row per click.** No bulk delete.
+- **Row only — no folder.** Deleting the row in the CSV does NOT
+  remove the sidecar files folder; that's an explicit follow-up the
+  user does by hand. Keeps the blast radius bounded.
+- **No keyboard shortcut.** Trash icon must be clicked.
+- **Reversible by atomic write semantics.** A failed rewrite leaves
+  the prior `contacts.csv` intact (D-L2). Successful rewrites are
+  not auto-undoable in v1 — Promote on Dropbox has Undo via the
+  reverse-move call; CSV rewrites don't have an obvious symmetric
+  reversal. If we add an undo affordance later, it'd be a snapshot
+  of the prior CSV held in memory for ~N seconds, mirroring the
+  pipeline Undo pattern.
+
+### D-L4. CRM attachments only land at deterministic, sanitized paths.
+The "Attach file" affordance picks a source via the OS open dialog
+(user-controlled) and computes the destination as
+`<rootPath>/files/<sanitized rowKey>/<basename>`. The row key passes
+through `sanitizeKey` (strips `..` segments and path separators) so
+a hand-edited row name like `"../etc/passwd"` cannot escape the
+CRM root. `local_copy_file` refuses to overwrite an existing
+destination, so a follow-up attach with the same basename surfaces
+as an error rather than silently clobbering an existing attachment.
+
 ### D9. Capabilities are minimal.
 `src-tauri/capabilities/default.json`: `core:default`, `opener:default`,
 `dialog:default`. No fs, shell-execute, or http permissions for the

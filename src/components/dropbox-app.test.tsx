@@ -229,6 +229,49 @@ describe("DropboxApp — connected: RemoteBrowser", () => {
     render(<DropboxApp />);
     expect(await screen.findByRole("alert")).toHaveTextContent(/path\/not_found/);
   });
+
+  it("flat browser supports a tile-view toggle that persists", async () => {
+    localStorage.removeItem("dropbox-interface:browser-view-mode:v1");
+    setupConnected({
+      "": [
+        {
+          kind: "folder",
+          name: "Photos",
+          path: "/photos",
+          displayPath: "/Photos",
+          size: null,
+          serverModified: null,
+        },
+        {
+          kind: "file",
+          name: "headshot.jpg",
+          path: "/headshot.jpg",
+          displayPath: "/headshot.jpg",
+          size: 100,
+          serverModified: "2025-01-02T00:00:00Z",
+        },
+      ],
+    });
+    setInvokeHandler("dropbox_read_text_file", () => null);
+    setInvokeHandler("dropbox_get_thumbnail", () => "data:image/jpeg;base64,zz");
+
+    const user = userEvent.setup();
+    render(<DropboxApp />);
+
+    await screen.findByText("Photos");
+    await user.click(screen.getByRole("button", { name: /tile view/i }));
+    expect(
+      screen.getByRole("button", { name: /open folder photos/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /preview headshot\.jpg/i }),
+    ).toBeInTheDocument();
+
+    const raw = localStorage.getItem(
+      "dropbox-interface:browser-view-mode:v1",
+    );
+    expect(JSON.parse(raw as string)).toEqual({ dropbox: "tile" });
+  });
 });
 
 describe("DropboxApp — image preview + save", () => {

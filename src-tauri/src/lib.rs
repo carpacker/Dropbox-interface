@@ -100,6 +100,20 @@ pub fn is_supported_image(path: &Path) -> bool {
 /// between local and Dropbox surfaces a consistent size limit.
 const LOCAL_TEXT_FILE_MAX_BYTES: u64 = 256 * 1024;
 
+/// Hard ceiling on caller-supplied `max_bytes`. The CRM CSV reader
+/// passes 10MB explicitly; anything larger gets clamped silently. Keeps
+/// a hand-edited renderer call from asking us to slurp an entire disk.
+const LOCAL_TEXT_FILE_HARD_CEILING: u64 = 16 * 1024 * 1024;
+
+/// Hard cap for `local_write_text_file`. Apps writing files (CRM CSV
+/// today) cap themselves below this; the renderer can't bypass it.
+const LOCAL_TEXT_WRITE_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Hard cap for `local_copy_file`. Larger than the text-write cap
+/// because user-attached files (images, PDFs) can be bigger than text;
+/// still bounded so the renderer can't ask us to copy a multi-GB blob.
+const LOCAL_COPY_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Read a small text file (e.g. a `.dropbox-interface.json`) from local
 /// disk. Returns `Some(contents)` on success, `None` when the file does
 /// not exist, or an `Err` for any other failure. Bounded by `max_bytes`
@@ -111,7 +125,11 @@ fn local_read_text_file(path: String, max_bytes: Option<u64>) -> Result<Option<S
     if trimmed.is_empty() {
         return Err("Path is empty".into());
     }
-    let cap = max_bytes.unwrap_or(LOCAL_TEXT_FILE_MAX_BYTES);
+    // Clamp the caller-supplied cap to the hard ceiling so a buggy or
+    // adversarial renderer can't ask us to read an arbitrary-size file.
+    let cap = max_bytes
+        .unwrap_or(LOCAL_TEXT_FILE_MAX_BYTES)
+        .min(LOCAL_TEXT_FILE_HARD_CEILING);
     let p = PathBuf::from(trimmed);
 
     let meta = match std::fs::metadata(&p) {
@@ -193,6 +211,107 @@ fn local_create_folder(path: String) -> Result<FsEntry, String> {
     entry_for_path(&p)
 }
 
+/// Write a text file atomically: write to `<path>.tmp` then rename
+/// over the destination. Used by the CRM to rewrite `contacts.csv`
+/// after a row add/edit/delete — if the rename fails mid-flight, the
+/// original file is unchanged.
+///
+/// `contents` is rejected if larger than `LOCAL_TEXT_WRITE_MAX_BYTES`
+/// so a runaway renderer can't fill the disk via one IPC call. The
+/// parent directory must already exist (the caller is responsible for
+/// creating CRM roots).
+#[tauri::command]
+fn local_write_text_file(path: String, contents: String) -> Result<FsEntry, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Path is empty".into());
+    }
+    if (contents.len() as u64) > LOCAL_TEXT_WRITE_MAX_BYTES {
+        return Err(format!(
+            "contents exceeds {LOCAL_TEXT_WRITE_MAX_BYTES}-byte cap"
+        ));
+    }
+    let p = PathBuf::from(trimmed);
+    if p.is_dir() {
+        return Err(format!("Path is a directory: {trimmed}"));
+    }
+    let parent = p
+        .parent()
+        .ok_or_else(|| format!("Path has no parent: {trimmed}"))?;
+    if !parent.exists() {
+        return Err(format!(
+            "Parent does not exist: {}",
+            parent.to_string_lossy()
+        ));
+    }
+
+    // Atomic write: stage at sibling .tmp, then rename. Crash between
+    // write + rename leaves the .tmp behind (we don't garbage-collect
+    // it; the user can clean up). Crash after rename = the new file
+    // is in place. Crash during rename = either old or new, never a
+    // half-written file.
+    let stage_name = match p.file_name().map(|s| s.to_string_lossy().into_owned()) {
+        Some(n) if !n.is_empty() => format!(".{n}.tmp"),
+        _ => return Err(format!("Path has no filename: {trimmed}")),
+    };
+    let stage = parent.join(stage_name);
+    std::fs::write(&stage, contents.as_bytes()).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::rename(&stage, &p) {
+        // Best-effort: try to remove the staging file so we don't
+        // leave it behind.
+        let _ = std::fs::remove_file(&stage);
+        return Err(e.to_string());
+    }
+    entry_for_path(&p)
+}
+
+/// Copy a file. Used by the CRM "Attach file" affordance: the user
+/// picks a file via the OS open dialog and we copy it into the
+/// per-row sidecar folder. Refuses to overwrite — mirrors `local_move`.
+#[tauri::command]
+fn local_copy_file(from_path: String, to_path: String) -> Result<FsEntry, String> {
+    let from = from_path.trim();
+    let to = to_path.trim();
+    if from.is_empty() || to.is_empty() {
+        return Err("Path is empty".into());
+    }
+    let from_p = PathBuf::from(from);
+    let to_p = PathBuf::from(to);
+
+    if !from_p.exists() {
+        return Err(format!("Source does not exist: {from}"));
+    }
+    if !from_p.is_file() {
+        return Err(format!("Source is not a file: {from}"));
+    }
+    if from_p == to_p {
+        return Err("Source and destination are the same".into());
+    }
+    if to_p.exists() {
+        return Err(format!("Destination already exists: {to}"));
+    }
+    let to_parent = to_p
+        .parent()
+        .ok_or_else(|| format!("Destination has no parent: {to}"))?;
+    if !to_parent.exists() {
+        return Err(format!(
+            "Destination parent does not exist: {}",
+            to_parent.to_string_lossy()
+        ));
+    }
+
+    let meta = std::fs::metadata(&from_p).map_err(|e| e.to_string())?;
+    if meta.len() > LOCAL_COPY_MAX_BYTES {
+        return Err(format!(
+            "source file ({} bytes) exceeds {LOCAL_COPY_MAX_BYTES}-byte cap",
+            meta.len()
+        ));
+    }
+
+    std::fs::copy(&from_p, &to_p).map_err(|e| e.to_string())?;
+    entry_for_path(&to_p)
+}
+
 /// Build an `FsEntry` describing an existing path. Used as the return
 /// value for `local_move` / `local_create_folder` so callers can
 /// optimistically update their listings without re-listing the parent.
@@ -230,8 +349,10 @@ pub fn run() {
             parent_directory,
             list_directory,
             local_read_text_file,
+            local_write_text_file,
             local_move,
             local_create_folder,
+            local_copy_file,
             terminal::terminal_spawn,
             terminal::terminal_write,
             terminal::terminal_resize,
@@ -607,5 +728,207 @@ mod tests {
         let target = dir.path().join("nope").join("child");
         let err = local_create_folder(target.to_string_lossy().into_owned()).unwrap_err();
         assert!(err.contains("Parent does not exist"), "got: {err}");
+    }
+
+    // -------- local_write_text_file ----------------------------------
+
+    #[test]
+    fn local_write_text_file_creates_a_new_file_and_returns_entry() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("contacts.csv");
+        let entry = local_write_text_file(
+            p.to_string_lossy().into_owned(),
+            "id,name\nada,Ada\n".to_string(),
+        )
+        .unwrap();
+        assert_eq!(entry.name, "contacts.csv");
+        assert_eq!(entry.size, Some(16));
+        assert_eq!(fs::read_to_string(&p).unwrap(), "id,name\nada,Ada\n");
+    }
+
+    #[test]
+    fn local_write_text_file_overwrites_existing_atomically() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("contacts.csv");
+        fs::write(&p, "old\n").unwrap();
+        local_write_text_file(
+            p.to_string_lossy().into_owned(),
+            "new contents\n".to_string(),
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "new contents\n");
+        // .tmp staging file must not survive a successful write.
+        let stage = dir.path().join(".contacts.csv.tmp");
+        assert!(!stage.exists(), "staging file leaked: {stage:?}");
+    }
+
+    #[test]
+    fn local_write_text_file_rejects_empty_path() {
+        let err = local_write_text_file("".into(), "x".into()).unwrap_err();
+        assert_eq!(err, "Path is empty");
+    }
+
+    #[test]
+    fn local_write_text_file_rejects_directory_target() {
+        let dir = tempdir().unwrap();
+        let err = local_write_text_file(
+            dir.path().to_string_lossy().into_owned(),
+            "x".into(),
+        )
+        .unwrap_err();
+        assert!(err.starts_with("Path is a directory"), "got: {err}");
+    }
+
+    #[test]
+    fn local_write_text_file_rejects_missing_parent() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("missing").join("contacts.csv");
+        let err = local_write_text_file(
+            p.to_string_lossy().into_owned(),
+            "x".into(),
+        )
+        .unwrap_err();
+        assert!(err.contains("Parent does not exist"), "got: {err}");
+    }
+
+    #[test]
+    fn local_write_text_file_enforces_byte_cap() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("big.csv");
+        // 17MB > 16MB cap.
+        let huge = "x".repeat((LOCAL_TEXT_WRITE_MAX_BYTES as usize) + 1);
+        let err = local_write_text_file(p.to_string_lossy().into_owned(), huge)
+            .unwrap_err();
+        assert!(err.contains("exceeds"), "got: {err}");
+        assert!(!p.exists(), "partial file leaked at {p:?}");
+    }
+
+    // -------- local_copy_file ----------------------------------------
+
+    #[test]
+    fn local_copy_file_copies_bytes_and_returns_entry() {
+        let dir = tempdir().unwrap();
+        let from = dir.path().join("src.txt");
+        let to = dir.path().join("dst.txt");
+        fs::write(&from, b"hello world").unwrap();
+        let entry = local_copy_file(
+            from.to_string_lossy().into_owned(),
+            to.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        assert_eq!(entry.name, "dst.txt");
+        assert_eq!(entry.size, Some(11));
+        // Source untouched, destination present.
+        assert_eq!(fs::read(&from).unwrap(), b"hello world");
+        assert_eq!(fs::read(&to).unwrap(), b"hello world");
+    }
+
+    #[test]
+    fn local_copy_file_rejects_empty_paths() {
+        assert_eq!(
+            local_copy_file("".into(), "/x".into()).unwrap_err(),
+            "Path is empty",
+        );
+        assert_eq!(
+            local_copy_file("/x".into(), "".into()).unwrap_err(),
+            "Path is empty",
+        );
+    }
+
+    #[test]
+    fn local_copy_file_rejects_missing_source() {
+        let dir = tempdir().unwrap();
+        let err = local_copy_file(
+            dir.path().join("nope.bin").to_string_lossy().into_owned(),
+            dir.path().join("dst.bin").to_string_lossy().into_owned(),
+        )
+        .unwrap_err();
+        assert!(err.contains("Source does not exist"), "got: {err}");
+    }
+
+    #[test]
+    fn local_copy_file_rejects_directory_source() {
+        let dir = tempdir().unwrap();
+        let err = local_copy_file(
+            dir.path().to_string_lossy().into_owned(),
+            dir.path().join("dst.bin").to_string_lossy().into_owned(),
+        )
+        .unwrap_err();
+        assert!(err.contains("not a file"), "got: {err}");
+    }
+
+    #[test]
+    fn local_copy_file_rejects_existing_destination() {
+        let dir = tempdir().unwrap();
+        let from = dir.path().join("a.txt");
+        let to = dir.path().join("b.txt");
+        fs::write(&from, b"src").unwrap();
+        fs::write(&to, b"existing").unwrap();
+        let err = local_copy_file(
+            from.to_string_lossy().into_owned(),
+            to.to_string_lossy().into_owned(),
+        )
+        .unwrap_err();
+        assert!(err.contains("already exists"), "got: {err}");
+        assert_eq!(fs::read(&to).unwrap(), b"existing");
+    }
+
+    #[test]
+    fn local_copy_file_rejects_same_path() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("a.txt");
+        fs::write(&p, b"x").unwrap();
+        let err = local_copy_file(
+            p.to_string_lossy().into_owned(),
+            p.to_string_lossy().into_owned(),
+        )
+        .unwrap_err();
+        assert!(err.contains("same"), "got: {err}");
+    }
+
+    #[test]
+    fn local_copy_file_rejects_missing_destination_parent() {
+        let dir = tempdir().unwrap();
+        let from = dir.path().join("src.txt");
+        let to = dir.path().join("nonexistent").join("dst.txt");
+        fs::write(&from, b"x").unwrap();
+        let err = local_copy_file(
+            from.to_string_lossy().into_owned(),
+            to.to_string_lossy().into_owned(),
+        )
+        .unwrap_err();
+        assert!(err.contains("parent does not exist"), "got: {err}");
+        assert!(from.exists());
+    }
+
+    // -------- local_read_text_file_hard_ceiling ---------------------
+
+    #[test]
+    fn local_read_text_file_clamps_caller_supplied_cap_to_hard_ceiling() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("file.txt");
+        // Above the hard ceiling (16MB). Even though we ask for 32MB,
+        // the clamp should fire and the read should fail since the
+        // file (which we don't write here) doesn't exist anyway.
+        let _ = local_read_text_file(
+            p.to_string_lossy().into_owned(),
+            Some(32 * 1024 * 1024),
+        );
+        // Above-ceiling file should be rejected with the clamped cap
+        // message. Write a 17MB file and try to read it with a 32MB
+        // user-supplied cap — must fail.
+        let huge = vec![b'a'; (LOCAL_TEXT_FILE_HARD_CEILING as usize) + 1];
+        fs::write(&p, huge).unwrap();
+        let err = local_read_text_file(
+            p.to_string_lossy().into_owned(),
+            Some(32 * 1024 * 1024),
+        )
+        .unwrap_err();
+        // The error message includes the *clamped* cap (16MB), proving
+        // the renderer can't bypass the ceiling.
+        assert!(
+            err.contains(&LOCAL_TEXT_FILE_HARD_CEILING.to_string()),
+            "got: {err}",
+        );
     }
 }

@@ -7,6 +7,8 @@ import {
   File,
   Folder,
   ImageIcon,
+  LayoutGrid,
+  List,
   LogOut,
   MessageSquare,
   Plug,
@@ -27,11 +29,18 @@ import {
 } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { BrowserTile } from "@/components/browser-tile";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { GalleryTile } from "@/components/gallery-tile";
 import { PipelineView } from "@/components/pipeline-view";
 import { SortDropdown } from "@/components/sort-dropdown";
+import { ViewModeToggle } from "@/components/view-mode-toggle";
 import type { AppDescriptor } from "@/lib/apps/types";
+import {
+  getBrowserViewMode,
+  setBrowserViewMode,
+  type BrowserViewMode,
+} from "@/lib/browser-view-mode";
 import { DropboxPipelineOperator } from "@/lib/dropbox-pipeline-operator";
 import { DropboxPipelineSource } from "@/lib/dropbox-pipeline-source";
 import { addRecentPipeline } from "@/lib/pipeline-recents";
@@ -269,6 +278,13 @@ function RemoteBrowser({
     loadSortPreference(),
   );
   const [filter, setFilter] = useState("");
+  const [viewMode, setViewModeState] = useState<BrowserViewMode>(() =>
+    getBrowserViewMode("dropbox"),
+  );
+  function updateViewMode(next: BrowserViewMode) {
+    setViewModeState(next);
+    setBrowserViewMode("dropbox", next);
+  }
 
   function updateSort(next: SortPreference) {
     setSort(next);
@@ -555,6 +571,14 @@ function RemoteBrowser({
                     : `${entries.length} item${entries.length === 1 ? "" : "s"}`}
               </p>
               <div className="flex items-center gap-2">
+                <ViewModeToggle<BrowserViewMode>
+                  value={viewMode}
+                  onChange={updateViewMode}
+                  options={[
+                    { value: "list", icon: List, label: "List" },
+                    { value: "tile", icon: LayoutGrid, label: "Tile" },
+                  ]}
+                />
                 <FilterChip
                   value={filter}
                   onChange={setFilter}
@@ -564,20 +588,42 @@ function RemoteBrowser({
                 <SortDropdown value={sort} onChange={updateSort} compact />
               </div>
             </div>
-            <ScrollArea className="h-[min(55vh,520px)] rounded-lg border">
-              <ul className="flex flex-col gap-1 p-2">
-                {loading ? (
-                  <li className="px-2 py-6 text-sm text-muted-foreground">
-                    Loading…
-                  </li>
-                ) : visibleFlatEntries.length === 0 ? (
-                  <li className="px-2 py-6 text-sm text-muted-foreground">
-                    {filter.trim() !== ""
-                      ? `No items match “${filter.trim()}”.`
-                      : "This folder is empty."}
-                  </li>
-                ) : (
-                  visibleFlatEntries.map((entry) => (
+            <ScrollArea
+              className={
+                viewMode === "tile"
+                  ? "h-[min(70vh,640px)] rounded-lg border"
+                  : "h-[min(55vh,520px)] rounded-lg border"
+              }
+            >
+              {loading ? (
+                <p className="px-3 py-6 text-sm text-muted-foreground">
+                  Loading…
+                </p>
+              ) : visibleFlatEntries.length === 0 ? (
+                <p className="px-3 py-6 text-sm text-muted-foreground">
+                  {filter.trim() !== ""
+                    ? `No items match “${filter.trim()}”.`
+                    : "This folder is empty."}
+                </p>
+              ) : viewMode === "tile" ? (
+                <ul className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+                  {visibleFlatEntries.map((entry) => (
+                    <li key={entry.path}>
+                      <BrowserTile
+                        entry={entry}
+                        isImage={isDropboxImage(entry)}
+                        loadThumbnail={async (e) =>
+                          dropboxGetThumbnail(e.path, "w256h256")
+                        }
+                        onOpenFolder={(p) => void load(p)}
+                        onPreview={() => void openPreview(entry)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <ul className="flex flex-col gap-0.5 p-1.5">
+                  {visibleFlatEntries.map((entry) => (
                     <li key={entry.path}>
                       <EntryRow
                         entry={entry}
@@ -595,9 +641,9 @@ function RemoteBrowser({
                         }
                       />
                     </li>
-                  ))
-                )}
-              </ul>
+                  ))}
+                </ul>
+              )}
             </ScrollArea>
           </>
         )}
@@ -826,13 +872,17 @@ function EntryIcon({ entry, isImage }: { entry: DropboxEntry; isImage: boolean }
   }, [entry.path, isImage]);
 
   if (entry.kind === "folder") {
-    return <Folder data-icon="inline-start" />;
+    return (
+      <Folder data-icon="inline-start" className="text-foreground/70" />
+    );
   }
   if (!isImage || failed) {
-    return <File data-icon="inline-start" />;
+    return <File data-icon="inline-start" className="text-foreground/50" />;
   }
   if (!thumb) {
-    return <ImageIcon data-icon="inline-start" />;
+    return (
+      <ImageIcon data-icon="inline-start" className="text-foreground/40" />
+    );
   }
   return (
     <img
